@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import MobileShell from "./components/MobileShell";
 import Home from "./pages/Home";
@@ -8,11 +9,11 @@ import People from "./pages/People";
 import Login from "./pages/Login";
 import useAuthUser from "./hooks/useAuthUser";
 
-function PrivateRoute({ children }: { children: JSX.Element }) {
+function PrivateRoute({ children }: { children: ReactNode }) {
   const { user, loading } = useAuthUser();
   if (loading) return <div className="p-4 text-sm text-zinc-600">Loading...</div>;
   if (!user) return <Navigate to="/login" replace />;
-  return children;
+  return <>{children}</>;
 }
 
 export default function App() {

@@ -9,3 +9,10 @@ html, body, #root {
 body {
   margin: 0;
 }
+html {
+  font-size: 18px;
+}
+
+body {
+  color: #111827; /* zinc-900-ish */
+}
