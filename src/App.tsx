@@ -6,20 +6,27 @@ import Reminders from "./pages/Reminders";
 import Messages from "./pages/Messages";
 import People from "./pages/People";
 import Login from "./pages/Login";
+import useAuthUser from "./hooks/useAuthUser";
+
+function PrivateRoute({ children }: { children: JSX.Element }) {
+  const { user, loading } = useAuthUser();
+  if (loading) return <div className="p-4 text-sm text-zinc-600">Loading...</div>;
+  if (!user) return <Navigate to="/login" replace />;
+  return children;
+}
 
 export default function App() {
   return (
     <BrowserRouter>
       <MobileShell>
         <Routes>
-          <Route path="/" element={<Home />} />
-          <Route path="/todos" element={<Todos />} />
-          <Route path="/reminders" element={<Reminders />} />
-          <Route path="/messages" element={<Messages />} />
-          <Route path="/people" element={<People />} />
-
-          {/* Auth page (wired in step 2) */}
           <Route path="/login" element={<Login />} />
+
+          <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
+          <Route path="/todos" element={<PrivateRoute><Todos /></PrivateRoute>} />
+          <Route path="/reminders" element={<PrivateRoute><Reminders /></PrivateRoute>} />
+          <Route path="/messages" element={<PrivateRoute><Messages /></PrivateRoute>} />
+          <Route path="/people" element={<PrivateRoute><People /></PrivateRoute>} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
