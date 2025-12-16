@@ -1,0 +1,11 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Optional: small sane defaults */
+html, body, #root {
+  height: 100%;
+}
+body {
+  margin: 0;
+}
