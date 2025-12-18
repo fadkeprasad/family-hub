@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   addDoc,
   collection,
@@ -18,6 +18,7 @@ import useProfile from "../hooks/useProfile";
 import { ymdToday } from "../lib/dateUtil";
 import type { SeriesEnd, SeriesPattern, TodoSeries } from "../lib/recurrence";
 import { occursOn } from "../lib/recurrence";
+import { celebrateBigFireworks, celebrateSmall } from "../lib/celebrations";
 
 type OneTodo = {
   id: string;
@@ -72,6 +73,13 @@ export default function Todos() {
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
+  // Edit one-time todo
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingText, setEditingText] = useState("");
+
+  // Fireworks when remaining hits 0
+  const prevRemainingRef = useRef<number>(-1);
+
   // recurring form state
   const [recTitle, setRecTitle] = useState("");
   const [recStart, setRecStart] = useState(ymdToday);
@@ -92,7 +100,7 @@ export default function Todos() {
   const todosCol = useMemo(() => collection(db, "todos"), []);
   const seriesCol = useMemo(() => collection(db, "todoSeries"), []);
 
-  // Mark seen (for future unread badge logic)
+  // Mark seen (for unread badge logic later)
   useEffect(() => {
     if (!uid) return;
     updateDoc(doc(db, "users", uid), { "lastSeen.todos": serverTimestamp() }).catch(() => {});
@@ -130,7 +138,7 @@ export default function Todos() {
     return () => unsub();
   }, [todosCol, selectedDate]);
 
-  // All recurring series (small scale app, simplest)
+  // All recurring series
   useEffect(() => {
     const unsub = onSnapshot(
       query(seriesCol),
@@ -155,6 +163,11 @@ export default function Todos() {
     return () => unsub();
   }, [seriesCol]);
 
+  function isOneDone(t: OneTodo) {
+    if (typeof t.completed === "boolean") return t.completed;
+    return legacyDoneFromMap(t.completedBy);
+  }
+
   async function addOneTime() {
     const trimmed = title.trim();
     if (!trimmed || !uid) return;
@@ -168,9 +181,7 @@ export default function Todos() {
         createdBy: uid,
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
-
-        // shared completion default
-        completed: false,
+        completed: false, // shared completion default
       });
       setTitle("");
     } catch (e: any) {
@@ -178,12 +189,6 @@ export default function Todos() {
     } finally {
       setBusy(false);
     }
-  }
-
-  function isOneDone(t: OneTodo) {
-    // If shared field exists, it wins. Otherwise fall back to legacy map.
-    if (typeof t.completed === "boolean") return t.completed;
-    return legacyDoneFromMap(t.completedBy);
   }
 
   async function toggleOne(todo: OneTodo) {
@@ -200,6 +205,8 @@ export default function Todos() {
         completedByRole: !isDone ? (userRole ?? null) : null,
         updatedAt: serverTimestamp(),
       });
+
+      if (!isDone) celebrateSmall();
     } catch (e: any) {
       setErr(e?.message ?? "Failed to update to-do");
     }
@@ -209,8 +216,29 @@ export default function Todos() {
     setErr(null);
     try {
       await deleteDoc(doc(db, "todos", id));
+      if (editingId === id) {
+        setEditingId(null);
+        setEditingText("");
+      }
     } catch (e: any) {
       setErr(e?.message ?? "Failed to delete to-do");
+    }
+  }
+
+  async function saveEditOne(todoId: string) {
+    const trimmed = editingText.trim();
+    if (!trimmed) return;
+
+    setErr(null);
+    try {
+      await updateDoc(doc(db, "todos", todoId), {
+        title: trimmed,
+        updatedAt: serverTimestamp(),
+      });
+      setEditingId(null);
+      setEditingText("");
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to update to-do");
     }
   }
 
@@ -229,7 +257,6 @@ export default function Todos() {
       return { type: "weekly", interval, daysOfWeek: days };
     }
 
-    // monthly
     if (recMonthlyMode === "dayOfMonth") {
       return { type: "monthly", interval, monthlyMode: "dayOfMonth", dayOfMonth: recDayOfMonth };
     }
@@ -266,7 +293,11 @@ export default function Todos() {
     }
   }
 
-  const seriesForDay = useMemo(() => seriesItems.filter((s) => occursOn(s, selectedDate)), [seriesItems, selectedDate]);
+  const seriesForDay = useMemo(
+    () => seriesItems.filter((s) => occursOn(s, selectedDate)),
+    [seriesItems, selectedDate],
+  );
+
   const [seriesDoneMap, setSeriesDoneMap] = useState<Record<string, boolean>>({});
 
   // Listen for per-day completion docs for series on this date (shared completion)
@@ -284,8 +315,6 @@ export default function Todos() {
 
       const unsub = onSnapshot(ref, (snap) => {
         const data = snap.exists() ? (snap.data() as any) : null;
-
-        // shared wins, else legacy
         const done =
           typeof data?.completed === "boolean"
             ? !!data.completed
@@ -327,6 +356,7 @@ export default function Todos() {
           completedByRole: userRole ?? null,
           updatedAt: serverTimestamp(),
         });
+        celebrateSmall();
         return;
       }
 
@@ -336,6 +366,8 @@ export default function Todos() {
         completedByRole: !isDone ? (userRole ?? null) : null,
         updatedAt: serverTimestamp(),
       });
+
+      if (!isDone) celebrateSmall();
     } catch (e: any) {
       setErr(e?.message ?? "Failed to update recurring to-do");
     }
@@ -360,6 +392,14 @@ export default function Todos() {
   }, [seriesForDay, seriesDoneMap, oneItems]);
 
   const remaining = rows.filter((r) => !r.done).length;
+
+  useEffect(() => {
+    const prev = prevRemainingRef.current;
+    if (prev >= 0 && prev > 0 && remaining === 0) {
+      celebrateBigFireworks();
+    }
+    prevRemainingRef.current = remaining;
+  }, [remaining]);
 
   return (
     <div>
@@ -421,24 +461,65 @@ export default function Todos() {
                   </span>
 
                   <div className="min-w-0">
-                    <div className={`min-w-0 break-words text-lg font-extrabold ${done ? "text-emerald-900" : "text-zinc-900"}`}>
+                    <div
+                      className={`min-w-0 break-words text-lg font-extrabold ${
+                        done ? "text-emerald-900" : "text-zinc-900"
+                      }`}
+                    >
                       {r.title}
                     </div>
-                    {isRecurring && (
-                      <div className="mt-1 text-sm font-bold text-violet-700">Recurring</div>
-                    )}
+                    {isRecurring && <div className="mt-1 text-sm font-bold text-violet-700">Recurring</div>}
                   </div>
                 </button>
 
                 {r.kind === "one" && (
-                  <button
-                    className="rounded-xl border px-3 py-2 text-base font-bold text-zinc-900"
-                    onClick={() => void removeOne(r.id)}
-                  >
-                    Delete
-                  </button>
+                  <div className="flex gap-2">
+                    <button
+                      className="rounded-xl border px-3 py-2 text-base font-bold text-zinc-900"
+                      onClick={() => {
+                        const t = oneItems.find((x) => x.id === r.id);
+                        setEditingId(r.id);
+                        setEditingText(t?.title ?? r.title);
+                      }}
+                    >
+                      Edit
+                    </button>
+                    <button
+                      className="rounded-xl border px-3 py-2 text-base font-bold text-zinc-900"
+                      onClick={() => void removeOne(r.id)}
+                    >
+                      Delete
+                    </button>
+                  </div>
                 )}
               </div>
+
+              {r.kind === "one" && editingId === r.id && (
+                <div className="mt-3 grid gap-2">
+                  <input
+                    className="w-full rounded-xl border px-4 py-3 text-base"
+                    value={editingText}
+                    onChange={(e) => setEditingText(e.target.value)}
+                  />
+                  <div className="flex gap-2">
+                    <button
+                      className="flex-1 rounded-xl bg-violet-700 py-3 text-base font-extrabold text-white"
+                      onClick={() => void saveEditOne(r.id)}
+                    >
+                      Save
+                    </button>
+                    <button
+                      className="flex-1 rounded-xl border py-3 text-base font-extrabold text-zinc-900"
+                      onClick={() => {
+                        setEditingId(null);
+                        setEditingText("");
+                      }}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })}
@@ -541,65 +622,6 @@ export default function Todos() {
                   );
                 })}
               </div>
-            </div>
-          )}
-
-          {recType === "monthly" && (
-            <div className="grid gap-3">
-              <div className="text-base font-bold text-zinc-800">Monthly pattern</div>
-
-              <select
-                className="w-full rounded-xl border px-4 py-4 text-base"
-                value={recMonthlyMode}
-                onChange={(e) => setRecMonthlyMode(e.target.value as any)}
-              >
-                <option value="dayOfMonth">On day of month</option>
-                <option value="nthWeekday">On nth weekday</option>
-              </select>
-
-              {recMonthlyMode === "dayOfMonth" && (
-                <div className="flex gap-2 items-center">
-                  <div className="text-base font-bold text-zinc-700">Day</div>
-                  <input
-                    className="w-28 rounded-xl border px-4 py-4 text-base"
-                    type="number"
-                    min={1}
-                    max={31}
-                    value={recDayOfMonth}
-                    onChange={(e) => setRecDayOfMonth(Math.min(31, Math.max(1, Number(e.target.value || 1))))}
-                  />
-                </div>
-              )}
-
-              {recMonthlyMode === "nthWeekday" && (
-                <div className="grid gap-2">
-                  <div className="flex gap-2">
-                    <select
-                      className="flex-1 rounded-xl border px-4 py-4 text-base"
-                      value={recNth}
-                      onChange={(e) => setRecNth(Number(e.target.value))}
-                    >
-                      <option value={1}>First</option>
-                      <option value={2}>Second</option>
-                      <option value={3}>Third</option>
-                      <option value={4}>Fourth</option>
-                      <option value={-1}>Last</option>
-                    </select>
-
-                    <select
-                      className="flex-1 rounded-xl border px-4 py-4 text-base"
-                      value={recWeekday}
-                      onChange={(e) => setRecWeekday(Number(e.target.value))}
-                    >
-                      {weekdays.map((w) => (
-                        <option key={w.k} value={w.k}>
-                          {w.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              )}
             </div>
           )}
 

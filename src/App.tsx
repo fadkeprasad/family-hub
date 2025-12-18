@@ -4,8 +4,7 @@ import MobileShell from "./components/MobileShell";
 import Home from "./pages/Home";
 import Todos from "./pages/Todos";
 import Reminders from "./pages/Reminders";
-import Messages from "./pages/Messages";
-import People from "./pages/People";
+import Journal from "./pages/Journal";
 import Login from "./pages/Login";
 import useAuthUser from "./hooks/useAuthUser";
 
@@ -23,11 +22,38 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
 
-          <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
-          <Route path="/todos" element={<PrivateRoute><Todos /></PrivateRoute>} />
-          <Route path="/reminders" element={<PrivateRoute><Reminders /></PrivateRoute>} />
-          <Route path="/messages" element={<PrivateRoute><Messages /></PrivateRoute>} />
-          <Route path="/people" element={<PrivateRoute><People /></PrivateRoute>} />
+          <Route
+            path="/"
+            element={
+              <PrivateRoute>
+                <Home />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/todos"
+            element={
+              <PrivateRoute>
+                <Todos />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/reminders"
+            element={
+              <PrivateRoute>
+                <Reminders />
+              </PrivateRoute>
+            }
+          />
+          <Route
+            path="/journal"
+            element={
+              <PrivateRoute>
+                <Journal />
+              </PrivateRoute>
+            }
+          />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
