@@ -1,6 +1,6 @@
 import useProfile from "./useProfile";
-import useThreadMeta from "./useThreadMeta";
 import useLatestReminderAt from "./useLatestReminderAt";
+import useTodoTodayRemaining from "./useTodoTodayRemaining";
 
 function toMillis(ts: any): number {
   return ts?.toMillis?.() ?? 0;
@@ -8,19 +8,15 @@ function toMillis(ts: any): number {
 
 export default function useBadges() {
   const { profile } = useProfile();
-  const thread = useThreadMeta();
   const latestReminderAt = useLatestReminderAt();
-
-  const lastSeenMessages = toMillis(profile?.lastSeen?.messages);
-  const lastMessageAt = toMillis(thread?.lastMessageAt);
+  const todosRemaining = useTodoTodayRemaining();
 
   const lastSeenReminders = toMillis(profile?.lastSeen?.reminders);
   const lastReminderAt = toMillis(latestReminderAt);
 
   return {
-    todos: 0,
-    people: 0,
-    messages: lastMessageAt > lastSeenMessages ? 1 : 0,
-    reminders: lastReminderAt > lastSeenReminders ? 1 : 0,
+    todos: todosRemaining, // number of unchecked today
+    reminders: lastReminderAt > lastSeenReminders ? 1 : 0, // dot style
+    journal: 0,
   };
 }

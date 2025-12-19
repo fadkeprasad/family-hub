@@ -7,8 +7,8 @@ export default function MobileShell({ children }: { children: ReactNode }) {
   const showTabs = pathname !== "/login";
 
   return (
-    <div className="mx-auto min-h-dvh max-w-md bg-white">
-      <div className={showTabs ? "px-4 pt-4 pb-24" : "px-4 pt-4 pb-6"}>{children}</div>
+    <div className="mx-auto min-h-dvh max-w-md bg-gradient-to-b from-zinc-950 to-zinc-900 text-zinc-100">
+      <div className={showTabs ? "px-4 pt-5 pb-32" : "px-4 pt-5 pb-6"}>{children}</div>
       {showTabs && <BottomTabs />}
     </div>
   );

@@ -185,7 +185,7 @@ export default function Messages() {
   const meName = profile?.displayName ?? "Me";
 
   return (
-    <div className="flex h-[calc(100dvh-112px)] flex-col">
+    <div className="flex h-full flex-col">
       <div className="pb-3">
         <h1 className="text-2xl font-extrabold text-zinc-900">Messages</h1>
         <div className="text-base font-medium text-zinc-700">Signed in as {meName}</div>

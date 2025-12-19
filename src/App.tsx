@@ -6,6 +6,7 @@ import Todos from "./pages/Todos";
 import Reminders from "./pages/Reminders";
 import Journal from "./pages/Journal";
 import Login from "./pages/Login";
+import TodoCalendar from "./pages/TodoCalendar";
 import useAuthUser from "./hooks/useAuthUser";
 
 function PrivateRoute({ children }: { children: ReactNode }) {
@@ -22,38 +23,11 @@ export default function App() {
         <Routes>
           <Route path="/login" element={<Login />} />
 
-          <Route
-            path="/"
-            element={
-              <PrivateRoute>
-                <Home />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/todos"
-            element={
-              <PrivateRoute>
-                <Todos />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/reminders"
-            element={
-              <PrivateRoute>
-                <Reminders />
-              </PrivateRoute>
-            }
-          />
-          <Route
-            path="/journal"
-            element={
-              <PrivateRoute>
-                <Journal />
-              </PrivateRoute>
-            }
-          />
+          <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
+          <Route path="/todos" element={<PrivateRoute><Todos /></PrivateRoute>} />
+          <Route path="/todos/calendar/:kind/:id" element={<PrivateRoute><TodoCalendar /></PrivateRoute>} />
+          <Route path="/reminders" element={<PrivateRoute><Reminders /></PrivateRoute>} />
+          <Route path="/journal" element={<PrivateRoute><Journal /></PrivateRoute>} />
 
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
