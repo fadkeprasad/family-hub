@@ -97,7 +97,7 @@ export default function Todos() {
   const { profile } = useProfile();
   const userRole = profile?.role; // "prasad" | "anjali" | undefined
 
-  const [selectedDate, setSelectedDate] = useState(ymdToday);
+  const [selectedDate, setSelectedDate] = useState<string>(() => ymdToday());
 
   const [oneItems, setOneItems] = useState<OneTodo[]>([]);
   const [seriesItems, setSeriesItems] = useState<TodoSeries[]>([]);
@@ -108,20 +108,16 @@ export default function Todos() {
 
   // recurring form state
   const [recTitle, setRecTitle] = useState("");
-  const [recStart, setRecStart] = useState(ymdToday);
+  const [recStart, setRecStart] = useState<string>(() => ymdToday());
 
   const [recEndType, setRecEndType] = useState<SeriesEnd["type"]>("never");
-  const [recEndDate, setRecEndDate] = useState(ymdToday);
+  const [recEndDate, setRecEndDate] = useState<string>(() => ymdToday());
 
   const [recType, setRecType] = useState<SeriesPattern["type"]>("weekly");
   const [recInterval, setRecInterval] = useState(1);
 
+  // Weekly selection is perfect, keep it as-is
   const [recWeekDays, setRecWeekDays] = useState<number[]>([1, 2, 3, 4, 5]); // Mon-Fri
-
-  const [recMonthlyMode, setRecMonthlyMode] = useState<"dayOfMonth" | "nthWeekday">("dayOfMonth");
-  const [recDayOfMonth, setRecDayOfMonth] = useState(1);
-  const [recNth, setRecNth] = useState(1);
-  const [recWeekday, setRecWeekday] = useState(1);
 
   const todosCol = useMemo(() => collection(db, "todos"), []);
   const seriesCol = useMemo(() => collection(db, "todoSeries"), []);
@@ -291,12 +287,9 @@ export default function Todos() {
       return { type: "weekly", interval, daysOfWeek: days };
     }
 
-    // monthly
-    if (recMonthlyMode === "dayOfMonth") {
-      return { type: "monthly", interval, monthlyMode: "dayOfMonth", dayOfMonth: recDayOfMonth };
-    }
-
-    return { type: "monthly", interval, monthlyMode: "nthWeekday", nth: recNth, weekday: recWeekday };
+    // monthly: day-of-month derived from Starts date
+    const startDay = ymdToDate(recStart).getDate();
+    return { type: "monthly", interval, monthlyMode: "dayOfMonth", dayOfMonth: startDay };
   }
 
   async function addSeries() {
@@ -427,6 +420,7 @@ export default function Todos() {
   }, [seriesForDay, seriesDoneMap, oneItems]);
 
   const remaining = rows.filter((r) => !r.done).length;
+
   useEffect(() => {
     const prev = prevRemainingRef.current;
     if (prev >= 0 && prev > 0 && remaining === 0) {
@@ -528,9 +522,7 @@ export default function Todos() {
               key={menuKey}
               className={[
                 "rounded-2xl border p-4 shadow-sm",
-                done
-                  ? "border-emerald-900/40 bg-emerald-950/20"
-                  : "border-zinc-800 bg-zinc-900/40",
+                done ? "border-emerald-900/40 bg-emerald-950/20" : "border-zinc-800 bg-zinc-900/40",
               ].join(" ")}
             >
               <div className="flex items-start justify-between gap-3">
@@ -571,7 +563,6 @@ export default function Todos() {
                 </button>
 
                 <div className="flex items-center gap-2">
-                  {/* Calendar icon */}
                   <button
                     className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/30 text-lg text-zinc-100"
                     onClick={() => nav(`/todos/calendar/${r.kind}/${r.id}`)}
@@ -582,7 +573,6 @@ export default function Todos() {
                     📅
                   </button>
 
-                  {/* 3-dot menu */}
                   <div className="relative">
                     <button
                       className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/30 text-2xl leading-none text-zinc-100"
@@ -678,6 +668,11 @@ export default function Todos() {
               value={recStart}
               onChange={(e) => setRecStart(e.target.value)}
             />
+            {recType === "monthly" && (
+              <div className="text-sm font-semibold text-zinc-400">
+                Monthly repeats on the same day-of-month as the Starts date.
+              </div>
+            )}
           </div>
 
           <div className="grid gap-2">
@@ -736,65 +731,6 @@ export default function Todos() {
                   );
                 })}
               </div>
-            </div>
-          )}
-
-          {recType === "monthly" && (
-            <div className="grid gap-3">
-              <div className="text-base font-extrabold text-zinc-200">Monthly pattern</div>
-
-              <select
-                className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-                value={recMonthlyMode}
-                onChange={(e) => setRecMonthlyMode(e.target.value as any)}
-              >
-                <option value="dayOfMonth">On day of month</option>
-                <option value="nthWeekday">On nth weekday</option>
-              </select>
-
-              {recMonthlyMode === "dayOfMonth" && (
-                <div className="flex items-center gap-2">
-                  <div className="text-base font-extrabold text-zinc-300">Day</div>
-                  <input
-                    className="w-28 rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-                    type="number"
-                    min={1}
-                    max={31}
-                    value={recDayOfMonth}
-                    onChange={(e) => setRecDayOfMonth(Math.min(31, Math.max(1, Number(e.target.value || 1))))}
-                  />
-                </div>
-              )}
-
-              {recMonthlyMode === "nthWeekday" && (
-                <div className="grid gap-2">
-                  <div className="flex gap-2">
-                    <select
-                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-                      value={recNth}
-                      onChange={(e) => setRecNth(Number(e.target.value))}
-                    >
-                      <option value={1}>First</option>
-                      <option value={2}>Second</option>
-                      <option value={3}>Third</option>
-                      <option value={4}>Fourth</option>
-                      <option value={-1}>Last</option>
-                    </select>
-
-                    <select
-                      className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-                      value={recWeekday}
-                      onChange={(e) => setRecWeekday(Number(e.target.value))}
-                    >
-                      {weekdays.map((w) => (
-                        <option key={w.k} value={w.k}>
-                          {w.label}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
