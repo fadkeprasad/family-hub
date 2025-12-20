@@ -5,7 +5,6 @@ import {
   deleteDoc,
   doc,
   onSnapshot,
-  orderBy,
   query,
   serverTimestamp,
   updateDoc,
@@ -43,6 +42,7 @@ export default function Reminders() {
   });
 
   const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
 
   const remindersCol = useMemo(() => collection(db, "reminders"), []);
 
@@ -53,31 +53,45 @@ export default function Reminders() {
   }, [uid]);
 
   // Live list (scoped by ownerUid)
+  // NOTE: no orderBy here to avoid composite index requirement
   useEffect(() => {
     if (!uid) {
       setItems([]);
       return;
     }
 
-    const q = query(
-      remindersCol,
-      where("ownerUid", "==", uid),
-      orderBy("expiresAt", "asc"),
-    );
+    setErr(null);
 
-    const unsub = onSnapshot(q, (snap) => {
-      const next: Reminder[] = snap.docs.map((d) => {
-        const data = d.data() as any;
-        return {
-          id: d.id,
-          text: String(data.text ?? ""),
-          expiresAt: data.expiresAt,
-          createdAt: data.createdAt,
-          updatedAt: data.updatedAt,
-        };
-      });
-      setItems(next);
-    });
+    const q = query(remindersCol, where("ownerUid", "==", uid));
+
+    const unsub = onSnapshot(
+      q,
+      (snap) => {
+        const next: Reminder[] = snap.docs.map((d) => {
+          const data = d.data() as any;
+          return {
+            id: d.id,
+            text: String(data.text ?? ""),
+            expiresAt: data.expiresAt,
+            createdAt: data.createdAt,
+            updatedAt: data.updatedAt,
+          };
+        });
+
+        // sort client-side by expiresAt asc
+        next.sort((a, b) => {
+          const ams = a.expiresAt?.toMillis?.() ?? 0;
+          const bms = b.expiresAt?.toMillis?.() ?? 0;
+          return ams - bms;
+        });
+
+        setItems(next);
+      },
+      (e) => {
+        setItems([]);
+        setErr(e?.message ?? "Failed to load reminders");
+      },
+    );
 
     return () => unsub();
   }, [remindersCol, uid]);
@@ -87,8 +101,11 @@ export default function Reminders() {
     if (!trimmed || !uid) return;
 
     setBusy(true);
+    setErr(null);
+
     try {
       const endOfDay = parseDateToEndOfDay(expiry);
+
       await addDoc(remindersCol, {
         ownerUid: uid,
         text: trimmed,
@@ -97,14 +114,21 @@ export default function Reminders() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+
       setText("");
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to add reminder");
     } finally {
       setBusy(false);
     }
   }
 
   async function removeReminder(id: string) {
-    await deleteDoc(doc(db, "reminders", id));
+    try {
+      await deleteDoc(doc(db, "reminders", id));
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to delete reminder");
+    }
   }
 
   function isExpired(expiresAt: any) {
@@ -113,13 +137,21 @@ export default function Reminders() {
   }
 
   return (
-    <div>
-      <h1 className="text-2xl font-extrabold text-zinc-900">Reminders</h1>
-      <p className="mt-1 text-base font-medium text-zinc-700">Add reminders with an expiry date.</p>
+    <div className="px-4 pb-24 pt-4">
+      <h1 className="text-3xl font-extrabold tracking-tight text-zinc-50">Reminders</h1>
+      <p className="mt-2 text-base font-semibold text-zinc-300">
+        Add reminders with an expiry date.
+      </p>
+
+      {err && (
+        <div className="mt-4 rounded-2xl border border-red-900/40 bg-red-950/40 p-3 text-sm font-semibold text-red-200">
+          {err}
+        </div>
+      )}
 
       <div className="mt-5 grid gap-3">
         {items.length === 0 && (
-          <div className="rounded-2xl border bg-zinc-50 p-4 text-base font-medium text-zinc-600">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 text-base font-semibold text-zinc-200">
             No reminders yet.
           </div>
         )}
@@ -130,14 +162,14 @@ export default function Reminders() {
             r.expiresAt?.toDate?.() instanceof Date ? r.expiresAt.toDate().toLocaleDateString() : "";
 
           return (
-            <div key={r.id} className="rounded-2xl border bg-white p-4 shadow-sm">
+            <div key={r.id} className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
-                  <div className="text-lg font-extrabold text-zinc-900">{r.text}</div>
-                  <div className="mt-1 text-base font-semibold text-zinc-700">
+                  <div className="text-lg font-extrabold text-zinc-50">{r.text}</div>
+                  <div className="mt-1 text-sm font-semibold text-zinc-300">
                     Expires: {dateLabel}{" "}
                     {expired && (
-                      <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-sm font-extrabold text-red-700">
+                      <span className="ml-2 rounded-full bg-red-950/50 px-2 py-0.5 text-xs font-extrabold text-red-200">
                         Expired
                       </span>
                     )}
@@ -145,8 +177,9 @@ export default function Reminders() {
                 </div>
 
                 <button
-                  className="rounded-xl border px-3 py-2 text-base font-bold text-zinc-900"
+                  className="rounded-xl border border-zinc-700 bg-zinc-950/30 px-3 py-2 text-sm font-bold text-zinc-100"
                   onClick={() => removeReminder(r.id)}
+                  type="button"
                 >
                   Delete
                 </button>
@@ -156,21 +189,21 @@ export default function Reminders() {
         })}
       </div>
 
-      <div className="mt-6 rounded-2xl border bg-zinc-50 p-4">
-        <div className="text-lg font-extrabold text-zinc-900">Add reminder</div>
+      <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+        <div className="text-lg font-extrabold text-zinc-50">Add reminder</div>
 
         <div className="mt-3 grid gap-3">
           <input
-            className="w-full rounded-xl border px-4 py-4 text-base"
+            className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base font-semibold text-zinc-100 placeholder:text-zinc-500"
             placeholder="Reminder text"
             value={text}
             onChange={(e) => setText(e.target.value)}
           />
 
           <div className="grid gap-2">
-            <div className="text-base font-bold text-zinc-800">Expiry date</div>
+            <div className="text-sm font-extrabold text-zinc-100">Expiry date</div>
             <input
-              className="w-full rounded-xl border px-4 py-4 text-base"
+              className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base font-semibold text-zinc-100"
               type="date"
               value={expiry}
               onChange={(e) => setExpiry(e.target.value)}
@@ -178,9 +211,10 @@ export default function Reminders() {
           </div>
 
           <button
-            className="rounded-xl bg-violet-700 py-4 text-base font-extrabold text-white disabled:opacity-60"
-            onClick={addReminder}
+            className="rounded-xl bg-zinc-100 py-4 text-base font-extrabold text-zinc-900 disabled:opacity-60"
+            onClick={() => void addReminder()}
             disabled={busy || text.trim().length === 0 || !expiry}
+            type="button"
           >
             {busy ? "Adding…" : "Add"}
           </button>

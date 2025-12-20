@@ -1,5 +1,10 @@
 import { initializeApp } from "firebase/app";
-import { getAuth, setPersistence, browserLocalPersistence } from "firebase/auth";
+import {
+  getAuth,
+  indexedDBLocalPersistence,
+  browserLocalPersistence,
+  setPersistence,
+} from "firebase/auth";
 import { getFirestore } from "firebase/firestore";
 
 const firebaseConfig = {
@@ -14,7 +19,10 @@ const app = initializeApp(firebaseConfig);
 export const auth = getAuth(app);
 export const db = getFirestore(app);
 
-// Keep user signed in across browser restarts
-setPersistence(auth, browserLocalPersistence).catch(() => {
-  // ignore
+// Keep user signed in across browser restarts.
+// Prefer IndexedDB (more robust), fallback to localStorage.
+setPersistence(auth, indexedDBLocalPersistence).catch(() => {
+  setPersistence(auth, browserLocalPersistence).catch(() => {
+    // ignore
+  });
 });

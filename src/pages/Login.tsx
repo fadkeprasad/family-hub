@@ -3,114 +3,63 @@ import {
   GoogleAuthProvider,
   getRedirectResult,
   signInWithPopup,
-  signInWithRedirect,
 } from "firebase/auth";
 import { useNavigate } from "react-router-dom";
-import { doc, serverTimestamp, setDoc } from "firebase/firestore";
-import { auth, db } from "../lib/firebase";
+import { auth } from "../lib/firebase";
 
 export default function Login() {
   const nav = useNavigate();
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function ensureUserDoc() {
-    const u = auth.currentUser;
-    if (!u) return;
-
-    await setDoc(
-      doc(db, "users", u.uid),
-      {
-        email: u.email ?? null,
-        displayName: u.displayName ?? null,
-        photoURL: u.photoURL ?? null,
-
-        // Keep a stable role field so your existing code that reads profile.role
-        // does not break. We keep it generic for multi-user.
-        role: "user",
-
-        createdAt: serverTimestamp(),
-        lastLoginAt: serverTimestamp(),
-      },
-      { merge: true },
-    );
-  }
-
   useEffect(() => {
-    let alive = true;
-
-    async function run() {
-      // Handle returning from redirect
-      try {
-        await getRedirectResult(auth);
-      } catch (e: any) {
-        if (!alive) return;
-        setErr(e?.message ?? "Login failed");
-        return;
-      }
-
-      if (!alive) return;
-
-      // If user is signed in (either already or after redirect), finalize and go Home
-      if (auth.currentUser) {
-        setBusy(true);
-        try {
-          await ensureUserDoc();
-          nav("/", { replace: true });
-        } catch (e: any) {
-          setErr(e?.message ?? "Failed to finish login");
-        } finally {
-          setBusy(false);
-        }
-      }
-    }
-
-    void run();
-    return () => {
-      alive = false;
-    };
-  }, [nav]);
+    getRedirectResult(auth).catch((e: any) => {
+      if (e) setErr(e?.message ?? "Login failed");
+    });
+  }, []);
 
   async function signInGoogle() {
-    setErr(null);
-    setBusy(true);
+  setErr(null);
+  setBusy(true);
+  try {
+    const provider = new GoogleAuthProvider();
 
-    try {
-      const provider = new GoogleAuthProvider();
-      provider.setCustomParameters({ prompt: "select_account" });
+    // Popup is more reliable across modern browsers now, and avoids redirect state issues.
+    await signInWithPopup(auth, provider);
 
-      const isMobile = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
+    nav("/", { replace: true });
+  } catch (e: any) {
+    const msg = e?.message ?? "Login failed";
 
-      if (isMobile) {
-        await signInWithRedirect(auth, provider);
-        return;
-      }
+    // Helpful hint for common iOS failures
+    const extra =
+      /popup|blocked|cancelled|closed/i.test(msg)
+        ? " If you are on iPhone, open this site in Safari (not inside another app) and allow popups."
+        : "";
 
-      await signInWithPopup(auth, provider);
-
-      await ensureUserDoc();
-      nav("/", { replace: true });
-    } catch (e: any) {
-      setErr(e?.message ?? "Login failed");
-    } finally {
-      setBusy(false);
-    }
+    setErr(msg + extra);
+  } finally {
+    setBusy(false);
   }
+}
 
   return (
-    <div>
-      <h1 className="text-xl font-semibold text-zinc-900">Sign in</h1>
-      <p className="mt-1 text-sm text-zinc-600">Continue with Google.</p>
+    <div className="px-4 pb-24 pt-4">
+      <h1 className="text-3xl font-extrabold tracking-tight text-zinc-50">Sign in</h1>
+      <p className="mt-2 text-base font-semibold text-zinc-300">Continue with Google.</p>
 
-      {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
+      {err && (
+        <div className="mt-4 rounded-2xl border border-red-900/40 bg-red-950/40 p-3 text-sm font-semibold text-red-200">
+          {err}
+        </div>
+      )}
 
       <button
-        className="mt-4 w-full rounded-xl bg-zinc-900 py-3 text-sm font-semibold text-white disabled:opacity-60"
+        className="mt-6 w-full rounded-2xl bg-zinc-100 py-4 text-base font-extrabold text-zinc-900 disabled:opacity-60"
         onClick={() => void signInGoogle()}
         disabled={busy}
-        type="button"
       >
-        {busy ? "Signing in..." : "Continue with Google"}
+        {busy ? "Signing in…" : "Continue with Google"}
       </button>
     </div>
   );

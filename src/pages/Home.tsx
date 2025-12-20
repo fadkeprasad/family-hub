@@ -35,7 +35,7 @@ export default function Home() {
         className="mt-5 w-full rounded-2xl border border-zinc-800 bg-zinc-900/40 py-4 text-base font-extrabold text-zinc-200"
         onClick={resetLogin}
       >
-        Reset login
+        Logout
       </button>
     </div>
   );

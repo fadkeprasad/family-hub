@@ -16,3 +16,25 @@ html {
 body {
   color: #111827; /* zinc-900-ish */
 }
+/* Make the native date picker icon visible on dark backgrounds */
+input[type="date"] {
+  color-scheme: dark;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.9;
+  cursor: pointer;
+}
+
+input[type="date"]::-webkit-calendar-picker-indicator:hover {
+  opacity: 1;
+}
+.date-dark-icon {
+  color-scheme: dark;
+}
+.date-dark-icon::-webkit-calendar-picker-indicator {
+  filter: invert(1);
+  opacity: 0.9;
+}
+
