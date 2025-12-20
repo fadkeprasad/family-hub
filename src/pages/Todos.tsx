@@ -128,9 +128,19 @@ export default function Todos() {
     updateDoc(doc(db, "users", uid), { "lastSeen.todos": serverTimestamp() }).catch(() => {});
   }, [uid]);
 
-  // One-time todos for selected date
+  // One-time todos for selected date (scoped by ownerUid)
   useEffect(() => {
-    const q = query(todosCol, where("dueDate", "==", selectedDate));
+    if (!uid) {
+      setOneItems([]);
+      return;
+    }
+
+    const q = query(
+      todosCol,
+      where("ownerUid", "==", uid),
+      where("dueDate", "==", selectedDate),
+    );
+
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -158,12 +168,17 @@ export default function Todos() {
     );
 
     return () => unsub();
-  }, [todosCol, selectedDate]);
+  }, [todosCol, uid, selectedDate]);
 
-  // All recurring series
+  // All recurring series (scoped by ownerUid)
   useEffect(() => {
+    if (!uid) {
+      setSeriesItems([]);
+      return;
+    }
+
     const unsub = onSnapshot(
-      query(seriesCol),
+      query(seriesCol, where("ownerUid", "==", uid)),
       (snap) => {
         const next: TodoSeries[] = snap.docs.map((d) => {
           const data = d.data() as any;
@@ -183,7 +198,7 @@ export default function Todos() {
     );
 
     return () => unsub();
-  }, [seriesCol]);
+  }, [seriesCol, uid]);
 
   async function addOneTime() {
     const trimmed = title.trim();
@@ -193,6 +208,7 @@ export default function Todos() {
     setErr(null);
     try {
       await addDoc(todosCol, {
+        ownerUid: uid,
         title: trimmed,
         dueDate: selectedDate,
         createdBy: uid,
@@ -303,6 +319,7 @@ export default function Todos() {
       const pattern = buildSeriesPattern();
 
       await addDoc(seriesCol, {
+        ownerUid: uid,
         title: trimmed,
         startDate: recStart,
         end,
@@ -380,6 +397,7 @@ export default function Todos() {
 
       if (!snap.exists()) {
         await setDoc(ref, {
+          ownerUid: uid,
           seriesId,
           date: selectedDate,
           completed: true,

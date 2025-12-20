@@ -9,6 +9,7 @@ import {
   query,
   serverTimestamp,
   updateDoc,
+  where,
   Timestamp,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
@@ -23,8 +24,6 @@ type Reminder = {
 };
 
 function parseDateToEndOfDay(dateStr: string) {
-  // dateStr is "YYYY-MM-DD"
-  // end of day local time, so it lasts through that date
   const [y, m, d] = dateStr.split("-").map(Number);
   return new Date(y, (m ?? 1) - 1, d ?? 1, 23, 59, 59, 999);
 }
@@ -53,9 +52,19 @@ export default function Reminders() {
     updateDoc(doc(db, "users", uid), { "lastSeen.reminders": serverTimestamp() }).catch(() => {});
   }, [uid]);
 
-  // Live list
+  // Live list (scoped by ownerUid)
   useEffect(() => {
-    const q = query(remindersCol, orderBy("expiresAt", "asc"));
+    if (!uid) {
+      setItems([]);
+      return;
+    }
+
+    const q = query(
+      remindersCol,
+      where("ownerUid", "==", uid),
+      orderBy("expiresAt", "asc"),
+    );
+
     const unsub = onSnapshot(q, (snap) => {
       const next: Reminder[] = snap.docs.map((d) => {
         const data = d.data() as any;
@@ -69,8 +78,9 @@ export default function Reminders() {
       });
       setItems(next);
     });
+
     return () => unsub();
-  }, [remindersCol]);
+  }, [remindersCol, uid]);
 
   async function addReminder() {
     const trimmed = text.trim();
@@ -80,6 +90,7 @@ export default function Reminders() {
     try {
       const endOfDay = parseDateToEndOfDay(expiry);
       await addDoc(remindersCol, {
+        ownerUid: uid,
         text: trimmed,
         expiresAt: Timestamp.fromDate(endOfDay),
         createdBy: uid,
@@ -116,9 +127,7 @@ export default function Reminders() {
         {items.map((r) => {
           const expired = isExpired(r.expiresAt);
           const dateLabel =
-            r.expiresAt?.toDate?.() instanceof Date
-              ? r.expiresAt.toDate().toLocaleDateString()
-              : "";
+            r.expiresAt?.toDate?.() instanceof Date ? r.expiresAt.toDate().toLocaleDateString() : "";
 
           return (
             <div key={r.id} className="rounded-2xl border bg-white p-4 shadow-sm">
@@ -127,7 +136,11 @@ export default function Reminders() {
                   <div className="text-lg font-extrabold text-zinc-900">{r.text}</div>
                   <div className="mt-1 text-base font-semibold text-zinc-700">
                     Expires: {dateLabel}{" "}
-                    {expired && <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-sm font-extrabold text-red-700">Expired</span>}
+                    {expired && (
+                      <span className="ml-2 rounded-full bg-red-100 px-2 py-0.5 text-sm font-extrabold text-red-700">
+                        Expired
+                      </span>
+                    )}
                   </div>
                 </div>
 

@@ -4,6 +4,7 @@ import { db } from "../lib/firebase";
 import { ymdToday } from "../lib/dateUtil";
 import type { SeriesEnd, SeriesPattern, TodoSeries } from "../lib/recurrence";
 import { occursOn } from "../lib/recurrence";
+import useAuthUser from "./useAuthUser";
 
 type OneTodo = {
   completed?: boolean;
@@ -16,6 +17,9 @@ function legacyDoneFromMap(m?: Record<string, boolean>) {
 }
 
 export default function useTodoTodayRemaining() {
+  const { user } = useAuthUser();
+  const uid = user?.uid ?? "";
+
   const date = ymdToday();
 
   const [oneTodos, setOneTodos] = useState<OneTodo[]>([]);
@@ -26,7 +30,17 @@ export default function useTodoTodayRemaining() {
   const seriesCol = useMemo(() => collection(db, "todoSeries"), []);
 
   useEffect(() => {
-    const q = query(todosCol, where("dueDate", "==", date));
+    if (!uid) {
+      setOneTodos([]);
+      return;
+    }
+
+    const q = query(
+      todosCol,
+      where("ownerUid", "==", uid),
+      where("dueDate", "==", date),
+    );
+
     const unsub = onSnapshot(q, (snap) => {
       const next = snap.docs.map((d) => {
         const data = d.data() as any;
@@ -37,11 +51,19 @@ export default function useTodoTodayRemaining() {
       });
       setOneTodos(next);
     });
+
     return () => unsub();
-  }, [todosCol, date]);
+  }, [todosCol, uid, date]);
 
   useEffect(() => {
-    const unsub = onSnapshot(seriesCol, (snap) => {
+    if (!uid) {
+      setSeries([]);
+      return;
+    }
+
+    const q = query(seriesCol, where("ownerUid", "==", uid));
+
+    const unsub = onSnapshot(q, (snap) => {
       const next: TodoSeries[] = snap.docs.map((d) => {
         const data = d.data() as any;
         return {
@@ -51,22 +73,35 @@ export default function useTodoTodayRemaining() {
           end: (data.end as SeriesEnd) ?? { type: "never" },
           pattern: (data.pattern as SeriesPattern) ?? { type: "daily", interval: 1 },
           active: data.active !== false,
+          weekly: data.weekly,
+          monthly: data.monthly,
         };
       });
       setSeries(next);
     });
-    return () => unsub();
-  }, [seriesCol]);
 
-  const seriesForDay = useMemo(() => series.filter((s) => occursOn(s, date)), [series, date]);
+    return () => unsub();
+  }, [seriesCol, uid]);
+
+  const seriesForDay = useMemo(
+    () => series.filter((s) => s.active !== false).filter((s) => occursOn(s, date)),
+    [series, date],
+  );
 
   useEffect(() => {
+    if (!uid) {
+      setSeriesDoneMap({});
+      return;
+    }
+
     setSeriesDoneMap({});
     if (seriesForDay.length === 0) return;
 
     const unsubs: Array<() => void> = [];
+
     for (const s of seriesForDay) {
       const ref = doc(db, "todoSeriesCompletions", `${s.id}_${date}`);
+
       const unsub = onSnapshot(ref, (snap) => {
         const data = snap.exists() ? (snap.data() as any) : null;
         const done =
@@ -76,17 +111,21 @@ export default function useTodoTodayRemaining() {
 
         setSeriesDoneMap((prev) => ({ ...prev, [s.id]: done }));
       });
+
       unsubs.push(unsub);
     }
+
     return () => {
       for (const u of unsubs) u();
     };
-  }, [date, seriesForDay]);
+  }, [uid, date, seriesForDay]);
 
-  const oneRemaining = oneTodos.filter((t) => {
-    const done = typeof t.completed === "boolean" ? t.completed : legacyDoneFromMap(t.completedBy);
-    return !done;
-  }).length;
+  const oneRemaining =
+    oneTodos.filter((t) => {
+      const done =
+        typeof t.completed === "boolean" ? !!t.completed : legacyDoneFromMap(t.completedBy);
+      return !done;
+    }).length;
 
   const seriesRemaining = seriesForDay.filter((s) => !seriesDoneMap[s.id]).length;
 

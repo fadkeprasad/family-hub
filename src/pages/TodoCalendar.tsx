@@ -117,6 +117,9 @@ export default function TodoCalendar() {
           setTitle(t.title || "One-time task");
           setMonthAnchor(firstOfMonth(ymdToDate(t.dueDate)));
         }
+      } catch {
+        if (!alive) return;
+        setTitle("Not found");
       } finally {
         if (alive) setLoading(false);
       }
@@ -129,7 +132,6 @@ export default function TodoCalendar() {
   }, [kind, id, todayYmd]);
 
   // Load completions for the month (series only)
-  // IMPORTANT: read by doc id (seriesId_date) so we don't miss docs that don't have "date" or "completed" fields.
   useEffect(() => {
     let alive = true;
 
@@ -173,35 +175,26 @@ export default function TodoCalendar() {
     };
   }, [kind, id, series, monthAnchor]);
 
-  const today = useMemo(() => ymdToDate(todayYmd), [todayYmd]);
-  const startOfThisMonth = useMemo(() => firstOfMonth(monthAnchor), [monthAnchor]);
-  const dim = useMemo(() => daysInMonth(monthAnchor), [monthAnchor]);
-  const monthLabel = useMemo(
-    () =>
-      startOfThisMonth.toLocaleString(undefined, {
-        month: "long",
-        year: "numeric",
-      }),
-    [startOfThisMonth],
-  );
+  const grid = useMemo(() => {
+    const first = firstOfMonth(monthAnchor);
+    const total = daysInMonth(monthAnchor);
 
-  const firstDow = startOfThisMonth.getDay();
-  const cells = useMemo(() => {
-    const out: Array<{ day: number | null; ymd: string | null }> = [];
-    for (let i = 0; i < firstDow; i++) out.push({ day: null, ymd: null });
-    for (let d = 1; d <= dim; d++) {
-      const dt = new Date(monthAnchor.getFullYear(), monthAnchor.getMonth(), d);
-      out.push({ day: d, ymd: dateToYmd(dt) });
+    const startDow = first.getDay();
+    const cells: Array<{ ymd: string; day: number } | null> = [];
+
+    for (let i = 0; i < startDow; i++) cells.push(null);
+
+    for (let day = 1; day <= total; day++) {
+      const dt = new Date(monthAnchor.getFullYear(), monthAnchor.getMonth(), day);
+      cells.push({ ymd: dateToYmd(dt), day });
     }
-    return out;
-  }, [firstDow, dim, monthAnchor]);
+
+    while (cells.length % 7 !== 0) cells.push(null);
+
+    return cells;
+  }, [monthAnchor]);
 
   function statusForDay(ymd: string) {
-    const dt = ymdToDate(ymd);
-    const isFuture = dt.getTime() > today.getTime();
-
-    if (isFuture) return { kind: "future" as const };
-
     if (kind === "one") {
       if (!oneTodo) return { kind: "none" as const };
       if (ymd !== oneTodo.dueDate) return { kind: "none" as const };
@@ -218,87 +211,103 @@ export default function TodoCalendar() {
 
   return (
     <div>
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-sm font-bold text-zinc-500">Calendar</div>
-          <h1 className="text-2xl font-extrabold text-zinc-900">{title}</h1>
-        </div>
-        <button
-          className="rounded-xl border px-3 py-2 text-base font-extrabold text-zinc-900"
-          onClick={() => nav("/todos")}
-        >
-          Back
-        </button>
-      </div>
-
-      <div className="mt-4 rounded-2xl border bg-white p-4">
+      <div className="mx-auto max-w-md px-4 pb-24 pt-4">
         <div className="flex items-center justify-between">
           <button
-            className="rounded-xl border px-3 py-2 text-base font-extrabold"
-            onClick={() => setMonthAnchor((m) => addMonths(m, -1))}
-            aria-label="Previous month"
+            className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-bold text-zinc-100"
+            onClick={() => nav(-1)}
           >
-            ‹
+            ← Back
           </button>
 
-          <div className="text-lg font-extrabold text-zinc-900">{monthLabel}</div>
+          <div className="text-center">
+            <div className="text-base font-extrabold text-zinc-100">{title}</div>
+            <div className="mt-1 text-xs font-semibold text-zinc-400">
+              {monthAnchor.toLocaleString(undefined, { month: "long", year: "numeric" })}
+            </div>
+          </div>
+
+          <div className="w-[72px]" />
+        </div>
+
+        <div className="mt-4 flex items-center justify-between">
+          <button
+            className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-bold text-zinc-100"
+            onClick={() => setMonthAnchor((d) => addMonths(d, -1))}
+          >
+            ←
+          </button>
 
           <button
-            className="rounded-xl border px-3 py-2 text-base font-extrabold"
-            onClick={() => setMonthAnchor((m) => addMonths(m, 1))}
-            aria-label="Next month"
+            className="rounded-xl bg-zinc-800 px-3 py-2 text-sm font-bold text-zinc-100"
+            onClick={() => setMonthAnchor(firstOfMonth(ymdToDate(todayYmd)))}
           >
-            ›
+            Today
+          </button>
+
+          <button
+            className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-bold text-zinc-100"
+            onClick={() => setMonthAnchor((d) => addMonths(d, 1))}
+          >
+            →
           </button>
         </div>
 
-        <div className="mt-4 grid grid-cols-7 gap-2 text-center text-sm font-extrabold text-zinc-500">
-          <div>Sun</div><div>Mon</div><div>Tue</div><div>Wed</div><div>Thu</div><div>Fri</div><div>Sat</div>
-        </div>
-
-        <div className="mt-2 grid grid-cols-7 gap-2">
-          {cells.map((c, idx) => {
-            if (!c.day || !c.ymd) return <div key={idx} className="h-12" />;
-
-            const s = statusForDay(c.ymd);
-            const isToday = c.ymd === todayYmd;
-
-            const base =
-              "h-12 w-full rounded-2xl flex items-center justify-center text-base font-extrabold select-none";
-
-            let cls = `${base} border border-zinc-200 text-zinc-900 bg-white`;
-
-            if (s.kind === "none") cls = `${base} border-2 border-zinc-300 text-zinc-900 bg-white`;
-            if (s.kind === "missed") cls = `${base} border-2 border-red-500 text-zinc-900 bg-white`;
-            if (s.kind === "done") cls = `${base} border-2 border-emerald-600 bg-emerald-600 text-white`;
-            if (s.kind === "future") cls = `${base} border border-zinc-200 text-zinc-400 bg-zinc-50`;
-
-            if (isToday) cls += " ring-2 ring-violet-400";
-
-            return (
-              <div key={idx} className={cls}>
-                {c.day}
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="mt-4 grid gap-2 text-sm font-bold text-zinc-700">
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-4 w-4 rounded-full bg-emerald-600" />
-            Completed
+        <div className="mt-4 rounded-2xl bg-zinc-950 p-4">
+          <div className="grid grid-cols-7 gap-2 text-center text-xs font-bold text-zinc-400">
+            <div>Sun</div>
+            <div>Mon</div>
+            <div>Tue</div>
+            <div>Wed</div>
+            <div>Thu</div>
+            <div>Fri</div>
+            <div>Sat</div>
           </div>
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-4 w-4 rounded-full border-2 border-red-500" />
-            Not completed
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="inline-block h-4 w-4 rounded-full border-2 border-zinc-300" />
-            Not a to-do day
-          </div>
-        </div>
 
-        {loading && <div className="mt-3 text-sm font-bold text-zinc-500">Loading…</div>}
+          <div className="mt-3 grid grid-cols-7 gap-2">
+            {grid.map((cell, idx) => {
+              if (!cell) return <div key={idx} className="h-10" />;
+
+              const st = statusForDay(cell.ymd);
+
+              const ring =
+                st.kind === "done"
+                  ? "border-emerald-500"
+                  : st.kind === "missed"
+                    ? "border-red-500"
+                    : "border-zinc-300";
+
+              const text = cell.ymd === todayYmd ? "text-zinc-100" : "text-zinc-300";
+
+              return (
+                <div
+                  key={cell.ymd}
+                  className="flex h-10 flex-col items-center justify-center rounded-xl bg-zinc-900"
+                >
+                  <div className={`text-xs font-bold ${text}`}>{cell.day}</div>
+                  <div className={`mt-1 h-4 w-4 rounded-full border-2 ${ring}`} />
+                </div>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 grid grid-cols-1 gap-2 text-xs font-semibold text-zinc-300">
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-4 w-4 rounded-full border-2 border-emerald-500" />
+              Completed
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-4 w-4 rounded-full border-2 border-red-500" />
+              Not completed
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="inline-block h-4 w-4 rounded-full border-2 border-zinc-300" />
+              Not a to-do day
+            </div>
+          </div>
+
+          {loading && <div className="mt-3 text-sm font-bold text-zinc-500">Loading…</div>}
+        </div>
       </div>
     </div>
   );

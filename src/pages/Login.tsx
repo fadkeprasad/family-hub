@@ -1,48 +1,94 @@
-import { useState } from "react";
-import { signInAnonymously } from "firebase/auth";
+import { useEffect, useState } from "react";
+import {
+  GoogleAuthProvider,
+  getRedirectResult,
+  signInWithPopup,
+  signInWithRedirect,
+} from "firebase/auth";
+import { useNavigate } from "react-router-dom";
 import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import { auth, db } from "../lib/firebase";
-import { useNavigate } from "react-router-dom";
-
-type Role = "prasad" | "anjali";
-
-function normalize(x: string) {
-  return x.trim().toLowerCase();
-}
 
 export default function Login() {
   const nav = useNavigate();
-  const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  async function onSubmit(e: React.FormEvent) {
-    e.preventDefault();
-    setErr(null);
+  async function ensureUserDoc() {
+    const u = auth.currentUser;
+    if (!u) return;
 
-    const role = normalize(code) as Role;
-    if (role !== "prasad" && role !== "anjali") {
-      setErr("Wrong password");
-      return;
+    await setDoc(
+      doc(db, "users", u.uid),
+      {
+        email: u.email ?? null,
+        displayName: u.displayName ?? null,
+        photoURL: u.photoURL ?? null,
+
+        // Keep a stable role field so your existing code that reads profile.role
+        // does not break. We keep it generic for multi-user.
+        role: "user",
+
+        createdAt: serverTimestamp(),
+        lastLoginAt: serverTimestamp(),
+      },
+      { merge: true },
+    );
+  }
+
+  useEffect(() => {
+    let alive = true;
+
+    async function run() {
+      // Handle returning from redirect
+      try {
+        await getRedirectResult(auth);
+      } catch (e: any) {
+        if (!alive) return;
+        setErr(e?.message ?? "Login failed");
+        return;
+      }
+
+      if (!alive) return;
+
+      // If user is signed in (either already or after redirect), finalize and go Home
+      if (auth.currentUser) {
+        setBusy(true);
+        try {
+          await ensureUserDoc();
+          nav("/", { replace: true });
+        } catch (e: any) {
+          setErr(e?.message ?? "Failed to finish login");
+        } finally {
+          setBusy(false);
+        }
+      }
     }
 
+    void run();
+    return () => {
+      alive = false;
+    };
+  }, [nav]);
+
+  async function signInGoogle() {
+    setErr(null);
     setBusy(true);
+
     try {
-      const cred = await signInAnonymously(auth);
-      const uid = cred.user.uid;
+      const provider = new GoogleAuthProvider();
+      provider.setCustomParameters({ prompt: "select_account" });
 
-      // Store which “role” this device chose
-      await setDoc(
-        doc(db, "users", uid),
-        {
-          role,
-          displayName: role === "prasad" ? "Prasad" : "Anjali",
-          createdAt: serverTimestamp(),
-          lastLoginAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
+      const isMobile = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent);
 
+      if (isMobile) {
+        await signInWithRedirect(auth, provider);
+        return;
+      }
+
+      await signInWithPopup(auth, provider);
+
+      await ensureUserDoc();
       nav("/", { replace: true });
     } catch (e: any) {
       setErr(e?.message ?? "Login failed");
@@ -53,32 +99,19 @@ export default function Login() {
 
   return (
     <div>
-      <h1 className="text-xl font-semibold text-zinc-900">Enter password</h1>
-      <p className="mt-1 text-sm text-zinc-600">This app is only for you and mom.</p>
+      <h1 className="text-xl font-semibold text-zinc-900">Sign in</h1>
+      <p className="mt-1 text-sm text-zinc-600">Continue with Google.</p>
 
-      <form onSubmit={onSubmit} className="mt-4 grid gap-3">
-        <input
-          className="w-full rounded-xl border px-3 py-3 text-sm"
-          placeholder="Password"
-          value={code}
-          onChange={(e) => setCode(e.target.value)}
-          autoComplete="off"
-        />
+      {err && <div className="mt-3 text-sm text-red-600">{err}</div>}
 
-        {err && <div className="text-sm text-red-600">{err}</div>}
-
-        <button
-          className="rounded-xl bg-zinc-900 py-3 text-sm font-semibold text-white disabled:opacity-60"
-          disabled={busy || code.trim().length === 0}
-        >
-          {busy ? "Signing in..." : "Sign in"}
-        </button>
-      </form>
-
-      <div className="mt-4 text-xs text-zinc-500">
-        Tip: use <span className="font-semibold">prasad</span> or{" "}
-        <span className="font-semibold">anjali</span>
-      </div>
+      <button
+        className="mt-4 w-full rounded-xl bg-zinc-900 py-3 text-sm font-semibold text-white disabled:opacity-60"
+        onClick={() => void signInGoogle()}
+        disabled={busy}
+        type="button"
+      >
+        {busy ? "Signing in..." : "Continue with Google"}
+      </button>
     </div>
   );
 }
