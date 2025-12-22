@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { doc, serverTimestamp, setDoc } from "firebase/firestore";
 import MobileShell from "./components/MobileShell";
 import Home from "./pages/Home";
 import Todos from "./pages/Todos";
@@ -7,31 +8,80 @@ import Reminders from "./pages/Reminders";
 import Journal from "./pages/Journal";
 import Login from "./pages/Login";
 import TodoCalendar from "./pages/TodoCalendar";
+import Friends from "./pages/Friends";
 import useAuthUser from "./hooks/useAuthUser";
+import { ViewProvider } from "./contexts/ViewContext";
+import { db } from "./lib/firebase";
 
-function PrivateRoute({ children }: { children: ReactNode }) {
+function AuthedApp() {
+  return (
+    <ViewProvider>
+      <MobileShell>
+        <Routes>
+          <Route path="/" element={<Home />} />
+          <Route path="/todos" element={<Todos />} />
+          <Route path="/todos/calendar/:kind/:id" element={<TodoCalendar />} />
+          <Route path="/reminders" element={<Reminders />} />
+          <Route path="/journal" element={<Journal />} />
+          <Route path="/friends" element={<Friends />} />
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </MobileShell>
+    </ViewProvider>
+  );
+}
+
+function PrivateGate({ children }: { children: ReactNode }) {
   const { user, loading } = useAuthUser();
-  if (loading) return <div className="p-4 text-sm text-zinc-600">Loading...</div>;
+
+  useEffect(() => {
+    if (!user) return;
+    const emailLower = (user.email ?? "").trim().toLowerCase();
+    if (!emailLower) return;
+
+    const ref = doc(db, "userDirectory", user.uid);
+    setDoc(
+      ref,
+      {
+        uid: user.uid,
+        emailLower,
+        displayName: user.displayName ?? "",
+        photoURL: user.photoURL ?? null,
+        updatedAt: serverTimestamp(),
+        createdAt: serverTimestamp(),
+      },
+      { merge: true },
+    ).catch(() => {});
+  }, [user]);
+
+  if (loading) {
+    return (
+      <div className="min-h-[100dvh] bg-gradient-to-b from-zinc-950 to-zinc-900 p-4 text-sm font-semibold text-zinc-300">
+        Loading...
+      </div>
+    );
+  }
+
   if (!user) return <Navigate to="/login" replace />;
+
   return <>{children}</>;
 }
 
 export default function App() {
   return (
     <BrowserRouter>
-      <MobileShell>
-        <Routes>
-          <Route path="/login" element={<Login />} />
+      <Routes>
+        <Route path="/login" element={<Login />} />
 
-          <Route path="/" element={<PrivateRoute><Home /></PrivateRoute>} />
-          <Route path="/todos" element={<PrivateRoute><Todos /></PrivateRoute>} />
-          <Route path="/todos/calendar/:kind/:id" element={<PrivateRoute><TodoCalendar /></PrivateRoute>} />
-          <Route path="/reminders" element={<PrivateRoute><Reminders /></PrivateRoute>} />
-          <Route path="/journal" element={<PrivateRoute><Journal /></PrivateRoute>} />
-
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </MobileShell>
+        <Route
+          path="/*"
+          element={
+            <PrivateGate>
+              <AuthedApp />
+            </PrivateGate>
+          }
+        />
+      </Routes>
     </BrowserRouter>
   );
 }

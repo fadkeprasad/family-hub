@@ -16,9 +16,10 @@ function legacyDoneFromMap(m?: Record<string, boolean>) {
   return Object.values(m).some(Boolean);
 }
 
-export default function useTodoTodayRemaining() {
+export default function useTodoTodayRemaining(ownerUid?: string) {
   const { user } = useAuthUser();
-  const uid = user?.uid ?? "";
+  const myUid = user?.uid ?? "";
+  const targetUid = ownerUid || myUid;
 
   const date = ymdToday();
 
@@ -30,14 +31,14 @@ export default function useTodoTodayRemaining() {
   const seriesCol = useMemo(() => collection(db, "todoSeries"), []);
 
   useEffect(() => {
-    if (!uid) {
+    if (!targetUid) {
       setOneTodos([]);
       return;
     }
 
     const q = query(
       todosCol,
-      where("ownerUid", "==", uid),
+      where("ownerUid", "==", targetUid),
       where("dueDate", "==", date),
     );
 
@@ -53,15 +54,15 @@ export default function useTodoTodayRemaining() {
     });
 
     return () => unsub();
-  }, [todosCol, uid, date]);
+  }, [todosCol, targetUid, date]);
 
   useEffect(() => {
-    if (!uid) {
+    if (!targetUid) {
       setSeries([]);
       return;
     }
 
-    const q = query(seriesCol, where("ownerUid", "==", uid));
+    const q = query(seriesCol, where("ownerUid", "==", targetUid));
 
     const unsub = onSnapshot(q, (snap) => {
       const next: TodoSeries[] = snap.docs.map((d) => {
@@ -73,15 +74,13 @@ export default function useTodoTodayRemaining() {
           end: (data.end as SeriesEnd) ?? { type: "never" },
           pattern: (data.pattern as SeriesPattern) ?? { type: "daily", interval: 1 },
           active: data.active !== false,
-          weekly: data.weekly,
-          monthly: data.monthly,
-        };
+        } as TodoSeries;
       });
       setSeries(next);
     });
 
     return () => unsub();
-  }, [seriesCol, uid]);
+  }, [seriesCol, targetUid]);
 
   const seriesForDay = useMemo(
     () => series.filter((s) => s.active !== false).filter((s) => occursOn(s, date)),
@@ -89,7 +88,7 @@ export default function useTodoTodayRemaining() {
   );
 
   useEffect(() => {
-    if (!uid) {
+    if (!targetUid) {
       setSeriesDoneMap({});
       return;
     }
@@ -102,15 +101,21 @@ export default function useTodoTodayRemaining() {
     for (const s of seriesForDay) {
       const ref = doc(db, "todoSeriesCompletions", `${s.id}_${date}`);
 
-      const unsub = onSnapshot(ref, (snap) => {
-        const data = snap.exists() ? (snap.data() as any) : null;
-        const done =
-          typeof data?.completed === "boolean"
-            ? !!data.completed
-            : legacyDoneFromMap(data?.completedBy);
+      const unsub = onSnapshot(
+        ref,
+        (snap) => {
+          const data = snap.exists() ? (snap.data() as any) : null;
+          const done =
+            typeof data?.completed === "boolean"
+              ? !!data.completed
+              : legacyDoneFromMap(data?.completedBy);
 
-        setSeriesDoneMap((prev) => ({ ...prev, [s.id]: done }));
-      });
+          setSeriesDoneMap((prev) => ({ ...prev, [s.id]: done }));
+        },
+        () => {
+          setSeriesDoneMap((prev) => ({ ...prev, [s.id]: false }));
+        },
+      );
 
       unsubs.push(unsub);
     }
@@ -118,7 +123,7 @@ export default function useTodoTodayRemaining() {
     return () => {
       for (const u of unsubs) u();
     };
-  }, [uid, date, seriesForDay]);
+  }, [targetUid, date, seriesForDay]);
 
   const oneRemaining =
     oneTodos.filter((t) => {

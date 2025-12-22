@@ -17,6 +17,7 @@ import {
 import { db } from "../lib/firebase";
 import useAuthUser from "../hooks/useAuthUser";
 import useProfile from "../hooks/useProfile";
+import { useView } from "../contexts/ViewContext";
 import { ymdToday } from "../lib/dateUtil";
 import type { SeriesEnd, SeriesPattern, TodoSeries } from "../lib/recurrence";
 import { occursOn } from "../lib/recurrence";
@@ -32,50 +33,51 @@ type OneTodo = {
   completedAt?: any;
   completedByRole?: "prasad" | "anjali";
 
-  // legacy per-user completion (old)
+  // legacy completion support
   completedBy?: Record<string, boolean>;
 };
 
 type Row =
-  | { kind: "series"; id: string; title: string; done: boolean }
-  | { kind: "one"; id: string; title: string; done: boolean };
+  | { kind: "one"; id: string; title: string; done: boolean }
+  | { kind: "series"; id: string; title: string; done: boolean };
 
-function toMillis(ts: any) {
-  return ts?.toMillis?.() ?? 0;
+function legacyDoneFromMap(map: any): boolean {
+  if (!map || typeof map !== "object") return false;
+  return Object.values(map).some(Boolean);
 }
-
-function legacyDoneFromMap(m?: Record<string, boolean>) {
-  if (!m) return false;
-  return Object.values(m).some(Boolean);
-}
-
-const weekdays = [
-  { k: 0, label: "Sun" },
-  { k: 1, label: "Mon" },
-  { k: 2, label: "Tue" },
-  { k: 3, label: "Wed" },
-  { k: 4, label: "Thu" },
-  { k: 5, label: "Fri" },
-  { k: 6, label: "Sat" },
-];
 
 function ymdToDate(ymd: string) {
   const [y, m, d] = ymd.split("-").map((x) => Number(x));
   return new Date(y, (m ?? 1) - 1, d ?? 1);
 }
-
 function dateToYmd(dt: Date) {
   const y = dt.getFullYear();
   const m = String(dt.getMonth() + 1).padStart(2, "0");
   const d = String(dt.getDate()).padStart(2, "0");
   return `${y}-${m}-${d}`;
 }
-
 function addDaysYmd(ymd: string, delta: number) {
   const dt = ymdToDate(ymd);
   dt.setDate(dt.getDate() + delta);
   return dateToYmd(dt);
 }
+
+function toMillis(ts: any) {
+  if (!ts) return 0;
+  if (typeof ts?.toMillis === "function") return ts.toMillis();
+  if (typeof ts?.seconds === "number") return ts.seconds * 1000;
+  return 0;
+}
+
+const weekdays = [
+  { label: "Sun", value: 0 },
+  { label: "Mon", value: 1 },
+  { label: "Tue", value: 2 },
+  { label: "Wed", value: 3 },
+  { label: "Thu", value: 4 },
+  { label: "Fri", value: 5 },
+  { label: "Sat", value: 6 },
+];
 
 export default function Todos() {
   const nav = useNavigate();
@@ -86,27 +88,41 @@ export default function Todos() {
 
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
 
+  const { user } = useAuthUser();
+  const uid = user?.uid ?? "";
+  const { activeOwnerUid, isMyView } = useView();
+  const ownerUid = activeOwnerUid || uid;
+  const canEdit = isMyView;
+
+  const { profile } = useProfile();
+  const userRole = profile?.role; // "prasad" | "anjali" | undefined
+
+  useEffect(() => {
+    if (!canEdit) {
+      setOpenMenuId(null);
+      setEditing(null);
+      setEditingText("");
+      setAddOpen(false);
+    }
+  }, [canEdit]);
+
   useEffect(() => {
     const onDown = () => setOpenMenuId(null);
     window.addEventListener("pointerdown", onDown);
     return () => window.removeEventListener("pointerdown", onDown);
   }, []);
 
-  const { user } = useAuthUser();
-  const uid = user?.uid ?? "";
-  const { profile } = useProfile();
-  const userRole = profile?.role; // "prasad" | "anjali" | undefined
-
   const [selectedDate, setSelectedDate] = useState<string>(() => ymdToday());
+
+  const [title, setTitle] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addMode, setAddMode] = useState<"one" | "recurring">("one");
 
   const [oneItems, setOneItems] = useState<OneTodo[]>([]);
   const [seriesItems, setSeriesItems] = useState<TodoSeries[]>([]);
-
-  const [title, setTitle] = useState("");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
-  // recurring form state
   const [recTitle, setRecTitle] = useState("");
   const [recStart, setRecStart] = useState<string>(() => ymdToday());
 
@@ -122,25 +138,20 @@ export default function Todos() {
   const todosCol = useMemo(() => collection(db, "todos"), []);
   const seriesCol = useMemo(() => collection(db, "todoSeries"), []);
 
-  // Mark seen (for badges)
+  // Mark seen (for badges) only in My view
   useEffect(() => {
-    if (!uid) return;
+    if (!uid || !canEdit) return;
     updateDoc(doc(db, "users", uid), { "lastSeen.todos": serverTimestamp() }).catch(() => {});
-  }, [uid]);
+  }, [uid, canEdit]);
 
-  // One-time todos for selected date (scoped by ownerUid)
+  // One-time todos for selected date
   useEffect(() => {
-    if (!uid) {
+    if (!ownerUid) {
       setOneItems([]);
       return;
     }
 
-    const q = query(
-      todosCol,
-      where("ownerUid", "==", uid),
-      where("dueDate", "==", selectedDate),
-    );
-
+    const q = query(todosCol, where("ownerUid", "==", ownerUid), where("dueDate", "==", selectedDate));
     const unsub = onSnapshot(
       q,
       (snap) => {
@@ -149,14 +160,14 @@ export default function Todos() {
           return {
             id: d.id,
             title: String(data.title ?? ""),
-            dueDate: String(data.dueDate ?? ""),
+            dueDate: String(data.dueDate ?? selectedDate),
             createdAt: data.createdAt,
 
             completed: typeof data.completed === "boolean" ? data.completed : undefined,
             completedAt: data.completedAt,
             completedByRole: data.completedByRole,
 
-            completedBy: (data.completedBy as Record<string, boolean> | undefined) ?? undefined,
+            completedBy: data.completedBy,
           };
         });
 
@@ -168,17 +179,17 @@ export default function Todos() {
     );
 
     return () => unsub();
-  }, [todosCol, uid, selectedDate]);
+  }, [todosCol, ownerUid, selectedDate]);
 
-  // All recurring series (scoped by ownerUid)
+  // All recurring series for this ownerUid
   useEffect(() => {
-    if (!uid) {
+    if (!ownerUid) {
       setSeriesItems([]);
       return;
     }
 
     const unsub = onSnapshot(
-      query(seriesCol, where("ownerUid", "==", uid)),
+      query(seriesCol, where("ownerUid", "==", ownerUid)),
       (snap) => {
         const next: TodoSeries[] = snap.docs.map((d) => {
           const data = d.data() as any;
@@ -198,9 +209,10 @@ export default function Todos() {
     );
 
     return () => unsub();
-  }, [seriesCol, uid]);
+  }, [seriesCol, ownerUid]);
 
   async function addOneTime() {
+    if (!canEdit) return;
     const trimmed = title.trim();
     if (!trimmed || !uid) return;
 
@@ -230,6 +242,7 @@ export default function Todos() {
   }
 
   async function toggleOne(todo: OneTodo) {
+    if (!canEdit) return;
     if (!uid) return;
     setErr(null);
 
@@ -250,6 +263,8 @@ export default function Todos() {
   }
 
   async function removeOne(id: string) {
+    if (!canEdit) return;
+    if (!uid) return;
     setErr(null);
     try {
       await deleteDoc(doc(db, "todos", id));
@@ -259,6 +274,7 @@ export default function Todos() {
   }
 
   async function removeSeries(seriesId: string) {
+    if (!canEdit) return;
     setErr(null);
     try {
       await updateDoc(doc(db, "todoSeries", seriesId), {
@@ -267,24 +283,6 @@ export default function Todos() {
       });
     } catch (e: any) {
       setErr(e?.message ?? "Failed to delete recurring to-do");
-    }
-  }
-
-  async function saveEdit(kind: Row["kind"], id: string) {
-    const trimmed = editingText.trim();
-    if (!trimmed) return;
-
-    setErr(null);
-    try {
-      if (kind === "one") {
-        await updateDoc(doc(db, "todos", id), { title: trimmed, updatedAt: serverTimestamp() });
-      } else {
-        await updateDoc(doc(db, "todoSeries", id), { title: trimmed, updatedAt: serverTimestamp() });
-      }
-      setEditing(null);
-      setEditingText("");
-    } catch (e: any) {
-      setErr(e?.message ?? "Failed to update");
     }
   }
 
@@ -309,6 +307,7 @@ export default function Todos() {
   }
 
   async function addSeries() {
+    if (!canEdit) return;
     const trimmed = recTitle.trim();
     if (!trimmed || !uid) return;
 
@@ -347,7 +346,7 @@ export default function Todos() {
 
   // Listen for per-day completion docs for series on this date (shared completion)
   useEffect(() => {
-    if (!uid) return;
+    if (!uid || !ownerUid) return;
 
     setSeriesDoneMap({});
     if (seriesForDay.length === 0) return;
@@ -362,25 +361,26 @@ export default function Todos() {
         const data = snap.exists() ? (snap.data() as any) : null;
 
         const done =
-          typeof data?.completed === "boolean"
-            ? !!data.completed
-            : legacyDoneFromMap(data?.completedBy);
+          typeof data?.completed === "boolean" ? !!data.completed : legacyDoneFromMap(data?.completedBy);
 
-        setSeriesDoneMap((prev) => ({ ...prev, [series.id]: done }));
+        setSeriesDoneMap((prev) => {
+          if (prev[series.id] === done) return prev;
+          return { ...prev, [series.id]: done };
+        });
       });
 
       unsubs.push(unsub);
     }
 
-    return () => {
-      for (const u of unsubs) u();
-    };
-  }, [uid, selectedDate, seriesForDay]);
+    return () => unsubs.forEach((u) => u());
+  }, [uid, ownerUid, selectedDate, seriesForDay]);
 
   async function toggleSeriesDone(seriesId: string) {
+    if (!canEdit) return;
     if (!uid) return;
 
     setErr(null);
+
     const completionId = `${seriesId}_${selectedDate}`;
     const ref = doc(db, "todoSeriesCompletions", completionId);
 
@@ -389,9 +389,7 @@ export default function Todos() {
       const data = snap.exists() ? (snap.data() as any) : null;
 
       const isDone =
-        typeof data?.completed === "boolean"
-          ? !!data.completed
-          : legacyDoneFromMap(data?.completedBy);
+        typeof data?.completed === "boolean" ? !!data.completed : legacyDoneFromMap(data?.completedBy);
 
       if (!isDone) celebrateSmall();
 
@@ -416,6 +414,25 @@ export default function Todos() {
       });
     } catch (e: any) {
       setErr(e?.message ?? "Failed to update recurring to-do");
+    }
+  }
+
+  async function saveEdit(kind: Row["kind"], id: string) {
+    if (!canEdit) return;
+    const trimmed = editingText.trim();
+    if (!trimmed) return;
+
+    setErr(null);
+    try {
+      if (kind === "one") {
+        await updateDoc(doc(db, "todos", id), { title: trimmed, updatedAt: serverTimestamp() });
+      } else {
+        await updateDoc(doc(db, "todoSeries", id), { title: trimmed, updatedAt: serverTimestamp() });
+      }
+      setEditing(null);
+      setEditingText("");
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to update");
     }
   }
 
@@ -449,29 +466,35 @@ export default function Todos() {
 
   return (
     <div>
-      <h1 className="text-3xl font-extrabold tracking-tight text-zinc-50">To-dos</h1>
-      <p className="mt-1 text-base font-semibold text-zinc-300">{remaining} remaining for this day</p>
+      <h1 className="text-2xl font-extrabold tracking-tight text-zinc-50 sm:text-3xl">To-dos</h1>
+      <p className="mt-1 text-sm font-semibold text-zinc-300 sm:text-base">{remaining} remaining for this day</p>
+
+      {!canEdit && (
+        <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-3 text-sm font-semibold text-zinc-200 sm:p-4 sm:text-base">
+          Read-only view. You cannot edit this user's data.
+        </div>
+      )}
 
       {err && (
-        <div className="mt-4 rounded-2xl border border-red-900/40 bg-red-950/40 p-4 text-base font-semibold text-red-200">
+        <div className="mt-4 rounded-2xl border border-red-900/40 bg-red-950/40 p-3 text-sm font-semibold text-red-200 sm:p-4 sm:text-base">
           {err}
         </div>
       )}
 
-      {editing && (
-        <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-          <div className="text-base font-extrabold text-zinc-100">
+      {canEdit && editing && (
+        <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-3 sm:p-4">
+          <div className="text-sm font-extrabold text-zinc-100 sm:text-base">
             Edit {editing.kind === "one" ? "to-do" : "recurring to-do"}
           </div>
           <input
-            className="mt-3 w-full rounded-xl border border-zinc-800 bg-zinc-950/40 px-4 py-4 text-base text-zinc-100 placeholder:text-zinc-500"
+            className="mt-3 w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 sm:text-base"
             value={editingText}
             onChange={(e) => setEditingText(e.target.value)}
-            placeholder="Update the text…"
+            placeholder="Update the text"
           />
           <div className="mt-3 flex gap-2">
             <button
-              className="flex-1 rounded-xl bg-emerald-600 py-4 text-base font-extrabold text-white disabled:opacity-60"
+              className="flex-1 rounded-xl bg-emerald-600 py-3 text-sm font-extrabold text-white disabled:opacity-60 sm:text-base"
               onClick={() => void saveEdit(editing.kind, editing.id)}
               disabled={editingText.trim().length === 0}
               type="button"
@@ -479,7 +502,7 @@ export default function Todos() {
               Save
             </button>
             <button
-              className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950/30 py-4 text-base font-extrabold text-zinc-200"
+              className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950/30 py-3 text-sm font-extrabold text-zinc-100 sm:text-base"
               onClick={() => {
                 setEditing(null);
                 setEditingText("");
@@ -492,73 +515,72 @@ export default function Todos() {
         </div>
       )}
 
-      <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-        <div className="text-base font-extrabold text-zinc-100">Choose date</div>
+      {/* Date */}
+      <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-3 sm:p-4">
+        <div className="flex items-center justify-between gap-2">
+          <div className="text-xs font-extrabold uppercase tracking-wide text-zinc-300 sm:text-sm">Date</div>
 
-        <div className="mt-2 flex items-center gap-2">
-          <button
-            className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-3 text-xl font-extrabold text-zinc-100"
-            onClick={() => setSelectedDate((d) => addDaysYmd(d, -1))}
-            aria-label="Previous day"
-            type="button"
-          >
-            ‹
-          </button>
+          <div className="flex items-center gap-2">
+            <button
+              className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-base font-extrabold text-zinc-100 sm:text-lg"
+              onClick={() => setSelectedDate((d) => addDaysYmd(d, -1))}
+              aria-label="Previous day"
+              type="button"
+            >
+              ‹
+            </button>
 
-          <input
-            className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-            type="date"
-            value={selectedDate}
-            onChange={(e) => setSelectedDate(e.target.value)}
-          />
+            <input
+              className="min-w-0 flex-1 overflow-hidden rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm text-zinc-100 sm:text-base"
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+            />
 
-          <button
-            className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-3 text-xl font-extrabold text-zinc-100"
-            onClick={() => setSelectedDate((d) => addDaysYmd(d, 1))}
-            aria-label="Next day"
-            type="button"
-          >
-            ›
-          </button>
+            <button
+              className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-base font-extrabold text-zinc-100 sm:text-lg"
+              onClick={() => setSelectedDate((d) => addDaysYmd(d, 1))}
+              aria-label="Next day"
+              type="button"
+            >
+              ›
+            </button>
+          </div>
         </div>
       </div>
 
+      {/* List */}
       <div className="mt-5 grid gap-3">
         {rows.length === 0 && (
-          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4 text-base font-semibold text-zinc-300">
+          <div className="rounded-2xl border border-zinc-800 bg-zinc-900/40 p-3 text-sm font-semibold text-zinc-300 sm:p-4 sm:text-base">
             No to-dos for this date.
           </div>
         )}
 
         {rows.map((r) => {
           const done = r.done;
-          const isRecurring = r.kind === "series";
           const menuKey = `${r.kind}_${r.id}`;
 
           return (
             <div
               key={menuKey}
               className={[
-                "rounded-2xl border p-4 shadow-sm",
+                "rounded-2xl border p-3 shadow-sm sm:p-4",
                 done ? "border-emerald-900/40 bg-emerald-950/20" : "border-zinc-800 bg-zinc-900/40",
               ].join(" ")}
             >
-              <div className="flex items-start justify-between gap-3">
+              <div className="flex items-center justify-between gap-3">
                 <button
-                  className="flex flex-1 items-start gap-3 text-left"
-                  onClick={() => {
-                    if (r.kind === "series") {
-                      void toggleSeriesDone(r.id);
-                    } else {
-                      const t = oneItems.find((x) => x.id === r.id);
-                      if (t) void toggleOne(t);
-                    }
-                  }}
+                  className="flex min-w-0 flex-1 items-start gap-3 text-left"
                   type="button"
+                  onClick={() => {
+                    if (r.kind === "one") void toggleOne({ id: r.id } as any);
+                    else void toggleSeriesDone(r.id);
+                  }}
                 >
                   <span
                     className={[
-                      "mt-1 inline-flex h-8 w-8 items-center justify-center rounded-xl border text-lg font-extrabold",
+                      "mt-1 inline-flex h-8 w-8 items-center justify-center rounded-xl border text-base font-extrabold",
                       done
                         ? "border-emerald-600 bg-emerald-600 text-white"
                         : "border-zinc-700 bg-zinc-950/20 text-zinc-500",
@@ -570,19 +592,21 @@ export default function Todos() {
                   <div className="min-w-0">
                     <div
                       className={[
-                        "min-w-0 break-words text-lg font-extrabold",
-                        done ? "text-emerald-100" : "text-zinc-100",
+                        "text-sm font-extrabold sm:text-base",
+                        done ? "text-emerald-100 line-through" : "text-zinc-100",
                       ].join(" ")}
                     >
                       {r.title}
                     </div>
-                    {isRecurring && <div className="mt-1 text-sm font-extrabold text-violet-300">Recurring</div>}
+                    <div className="mt-1 text-xs font-semibold text-zinc-400 sm:text-sm">
+                      {r.kind === "series" ? "Recurring" : "One-time"}
+                    </div>
                   </div>
                 </button>
 
                 <div className="flex items-center gap-2">
                   <button
-                    className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/30 text-lg text-zinc-100"
+                    className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/30 text-base text-zinc-100 sm:h-10 sm:w-10"
                     onClick={() => nav(`/todos/calendar/${r.kind}/${r.id}`)}
                     type="button"
                     aria-label="Open calendar"
@@ -593,11 +617,13 @@ export default function Todos() {
 
                   <div className="relative">
                     <button
-                      className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/30 text-2xl leading-none text-zinc-100"
+                      className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/30 text-xl leading-none text-zinc-100 sm:h-10 sm:w-10"
                       type="button"
+                      disabled={!canEdit}
                       aria-label="More"
                       title="More"
                       onClick={(e) => {
+                        if (!canEdit) return;
                         e.stopPropagation();
                         setOpenMenuId((prev) => (prev === menuKey ? null : menuKey));
                       }}
@@ -607,7 +633,7 @@ export default function Todos() {
 
                     {openMenuId === menuKey && (
                       <div
-                        className="absolute right-0 top-12 z-10 w-44 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/90 shadow-xl backdrop-blur"
+                        className="absolute right-0 top-12 w-40 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/90 shadow-xl backdrop-blur"
                         onPointerDown={(e) => e.stopPropagation()}
                       >
                         <button
@@ -643,146 +669,213 @@ export default function Todos() {
         })}
       </div>
 
-      {/* Add one-time */}
-      <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-        <div className="text-lg font-extrabold text-zinc-100">Add one-time</div>
-
-        <div className="mt-3 grid gap-3">
-          <input
-            className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100 placeholder:text-zinc-500"
-            placeholder="What do you need to do?"
-            value={title}
-            onChange={(e) => setTitle(e.target.value)}
-          />
-
+      {canEdit && (
+        <div className="mt-6">
           <button
-            className="rounded-xl bg-emerald-600 py-4 text-base font-extrabold text-white disabled:opacity-60"
-            onClick={() => void addOneTime()}
-            disabled={busy || title.trim().length === 0 || !selectedDate}
+            className="w-full rounded-2xl border border-zinc-800 bg-zinc-900/40 py-3 text-sm font-extrabold text-zinc-100 sm:text-base"
+            onClick={() => setAddOpen((v) => !v)}
             type="button"
           >
-            {busy ? "Adding…" : "Add"}
+            {addOpen ? "Close add" : "Add to-do"}
           </button>
-        </div>
-      </div>
 
-      {/* Add recurring */}
-      <div className="mt-6 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-        <div className="text-lg font-extrabold text-zinc-100">Add recurring</div>
-
-        <div className="mt-3 grid gap-3">
-          <input
-            className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100 placeholder:text-zinc-500"
-            placeholder="Recurring to-do title"
-            value={recTitle}
-            onChange={(e) => setRecTitle(e.target.value)}
-          />
-
-          <div className="grid gap-2">
-            <div className="text-base font-extrabold text-zinc-200">Starts</div>
-            <input
-              className="w-full min-w-0 overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-              type="date"
-              value={recStart}
-              onChange={(e) => setRecStart(e.target.value)}
-            />
-            {recType === "monthly" && (
-              <div className="text-sm font-semibold text-zinc-400">
-                Monthly repeats on the same day-of-month as the Starts date.
+          {addOpen && (
+            <div className="mt-3 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-3 sm:p-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="text-sm font-extrabold text-zinc-100 sm:text-base">Add a to-do</div>
+                <div className="text-xs font-semibold text-zinc-400 sm:text-sm">
+                  {addMode === "one" ? "One-time" : "Recurring"}
+                </div>
               </div>
-            )}
-          </div>
 
-          <div className="grid gap-2">
-            <div className="text-base font-extrabold text-zinc-200">Repeats</div>
-            <select
-              className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-              value={recType}
-              onChange={(e) => setRecType(e.target.value as any)}
-            >
-              <option value="daily">Daily</option>
-              <option value="weekly">Weekly</option>
-              <option value="monthly">Monthly</option>
-            </select>
-          </div>
+              <div className="mt-3 grid gap-3">
+                <div className="grid grid-cols-2 gap-2">
+                  <button
+                    type="button"
+                    className={[
+                      "rounded-xl border px-4 py-3 text-xs font-extrabold sm:text-sm",
+                      addMode === "recurring"
+                        ? "border-zinc-100 bg-zinc-100 text-zinc-900"
+                        : "border-zinc-800 bg-zinc-950/30 text-zinc-200",
+                    ].join(" ")}
+                    onClick={() => setAddMode("recurring")}
+                  >
+                    Recurring
+                  </button>
+                  <button
+                    type="button"
+                    className={[
+                      "rounded-xl border px-4 py-3 text-xs font-extrabold sm:text-sm",
+                      addMode === "one"
+                        ? "border-zinc-100 bg-zinc-100 text-zinc-900"
+                        : "border-zinc-800 bg-zinc-950/30 text-zinc-200",
+                    ].join(" ")}
+                    onClick={() => setAddMode("one")}
+                  >
+                    One-time
+                  </button>
+                </div>
 
-          <div className="grid gap-2">
-            <div className="text-base font-extrabold text-zinc-200">Every</div>
-            <div className="flex gap-2">
-              <input
-                className="w-28 rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-                type="number"
-                min={1}
-                value={recInterval}
-                onChange={(e) => setRecInterval(Math.max(1, Number(e.target.value || 1)))}
-              />
-              <div className="flex items-center text-base font-extrabold text-zinc-300">
-                {recType === "daily" ? "day(s)" : recType === "weekly" ? "week(s)" : "month(s)"}
-              </div>
-            </div>
-          </div>
+                {addMode === "one" ? (
+                  <div className="grid gap-3">
+                    <input
+                      className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 sm:text-base"
+                      placeholder="What do you need to do?"
+                      value={title}
+                      onChange={(e) => setTitle(e.target.value)}
+                    />
 
-          {recType === "weekly" && (
-            <div className="grid gap-2">
-              <div className="text-base font-extrabold text-zinc-200">On</div>
-              <div className="flex flex-wrap gap-2">
-                {weekdays.map((w) => {
-                  const on = recWeekDays.includes(w.k);
-                  return (
                     <button
-                      key={w.k}
+                      className="rounded-xl bg-emerald-600 py-3 text-sm font-extrabold text-white disabled:opacity-60 sm:text-base"
+                      onClick={() => void addOneTime()}
+                      disabled={busy || title.trim().length === 0}
                       type="button"
-                      className={[
-                        "rounded-xl border px-3 py-2 text-base font-extrabold",
-                        on
-                          ? "border-violet-500 bg-violet-600 text-white"
-                          : "border-zinc-800 bg-zinc-950/20 text-zinc-200",
-                      ].join(" ")}
-                      onClick={() => {
-                        setRecWeekDays((prev) =>
-                          prev.includes(w.k) ? prev.filter((x) => x !== w.k) : [...prev, w.k].sort(),
-                        );
-                      }}
                     >
-                      {w.label}
+                      {busy ? "Adding..." : "Add one-time"}
                     </button>
-                  );
-                })}
+                  </div>
+                ) : (
+                  <div className="grid gap-3">
+                    <input
+                      className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 sm:text-base"
+                      placeholder="Recurring to-do title"
+                      value={recTitle}
+                      onChange={(e) => setRecTitle(e.target.value)}
+                    />
+
+                    <div className="grid gap-2">
+                      <div className="text-xs font-extrabold uppercase tracking-wide text-zinc-300 sm:text-sm">Type</div>
+                      <div className="flex gap-2">
+                        {(["daily", "weekly", "monthly"] as const).map((t) => (
+                          <button
+                            key={t}
+                            type="button"
+                            className={[
+                              "flex-1 rounded-xl border px-3 py-2 text-xs font-extrabold sm:text-sm",
+                              recType === t
+                                ? "border-violet-500 bg-violet-600/40 text-zinc-50"
+                                : "border-zinc-800 bg-zinc-950/30 text-zinc-200",
+                            ].join(" ")}
+                            onClick={() => setRecType(t)}
+                          >
+                            {t[0].toUpperCase() + t.slice(1)}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="grid gap-2">
+                      <div className="text-xs font-extrabold uppercase tracking-wide text-zinc-300 sm:text-sm">Starts</div>
+                      <input
+                        className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm font-semibold text-zinc-100 sm:text-base"
+                        type="date"
+                        value={recStart}
+                        onChange={(e) => setRecStart(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="grid gap-2">
+                      <div className="text-xs font-extrabold uppercase tracking-wide text-zinc-300 sm:text-sm">Every</div>
+                      <div className="flex items-center gap-2">
+                        <input
+                          className="w-24 rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm font-semibold text-zinc-100 sm:text-base"
+                          type="number"
+                          min={1}
+                          value={recInterval}
+                          onChange={(e) => setRecInterval(Math.max(1, Number(e.target.value || 1)))}
+                        />
+                        <div className="flex items-center text-sm font-extrabold text-zinc-300">
+                          {recType === "daily" ? "day(s)" : recType === "weekly" ? "week(s)" : "month(s)"}
+                        </div>
+                      </div>
+                    </div>
+
+                    {recType === "weekly" && (
+                      <div className="grid gap-2">
+                        <div className="text-xs font-extrabold uppercase tracking-wide text-zinc-300 sm:text-sm">On</div>
+                        <div className="flex flex-wrap gap-2">
+                          {weekdays.map((w) => {
+                            const active = recWeekDays.includes(w.value);
+                            return (
+                              <button
+                                key={w.value}
+                                type="button"
+                                className={[
+                                  "rounded-xl border px-3 py-2 text-xs font-extrabold sm:text-sm",
+                                  active
+                                    ? "border-violet-500 bg-violet-600/40 text-zinc-50"
+                                    : "border-zinc-800 bg-zinc-950/30 text-zinc-200",
+                                ].join(" ")}
+                                onClick={() => {
+                                  setRecWeekDays((prev) => {
+                                    if (prev.includes(w.value)) return prev.filter((x) => x !== w.value);
+                                    return [...prev, w.value].sort((a, b) => a - b);
+                                  });
+                                }}
+                              >
+                                {w.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="grid gap-2">
+                      <div className="text-xs font-extrabold uppercase tracking-wide text-zinc-300 sm:text-sm">Ends</div>
+                      <div className="flex gap-2">
+                        <button
+                          type="button"
+                          className={[
+                            "flex-1 rounded-xl border px-3 py-2 text-xs font-extrabold sm:text-sm",
+                            recEndType === "never"
+                              ? "border-violet-500 bg-violet-600/40 text-zinc-50"
+                              : "border-zinc-800 bg-zinc-950/30 text-zinc-200",
+                          ].join(" ")}
+                          onClick={() => setRecEndType("never")}
+                        >
+                          Never
+                        </button>
+                        <button
+                          type="button"
+                          className={[
+                            "flex-1 rounded-xl border px-3 py-2 text-xs font-extrabold sm:text-sm",
+                            recEndType === "onDate"
+                              ? "border-violet-500 bg-violet-600/40 text-zinc-50"
+                              : "border-zinc-800 bg-zinc-950/30 text-zinc-200",
+                          ].join(" ")}
+                          onClick={() => setRecEndType("onDate")}
+                        >
+                          On date
+                        </button>
+                      </div>
+
+                      {recEndType === "onDate" && (
+                        <input
+                          className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm font-semibold text-zinc-100 sm:text-base"
+                          type="date"
+                          value={recEndDate}
+                          onChange={(e) => setRecEndDate(e.target.value)}
+                        />
+                      )}
+                    </div>
+
+                    <button
+                      className="rounded-xl bg-violet-600 py-3 text-sm font-extrabold text-white disabled:opacity-60 sm:text-base"
+                      onClick={() => void addSeries()}
+                      disabled={busy || recTitle.trim().length === 0}
+                      type="button"
+                    >
+                      {busy ? "Adding..." : "Add recurring"}
+                    </button>
+                  </div>
+                )}
               </div>
             </div>
           )}
-
-          <div className="grid gap-2">
-            <div className="text-base font-extrabold text-zinc-200">Ends</div>
-            <select
-              className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-              value={recEndType}
-              onChange={(e) => setRecEndType(e.target.value as any)}
-            >
-              <option value="never">Never</option>
-              <option value="onDate">On date</option>
-            </select>
-
-            {recEndType === "onDate" && (
-              <input
-                className="w-full min-w-0 overflow-hidden text-ellipsis whitespace-nowrap rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base text-zinc-100"
-                type="date"
-                value={recEndDate}
-                onChange={(e) => setRecEndDate(e.target.value)}
-              />
-            )}
-          </div>
-
-          <button
-            className="rounded-xl bg-violet-600 py-4 text-base font-extrabold text-white disabled:opacity-60"
-            onClick={() => void addSeries()}
-            disabled={busy || recTitle.trim().length === 0}
-            type="button"
-          >
-            {busy ? "Adding…" : "Add recurring"}
-          </button>
         </div>
-      </div>
+      )}
+
     </div>
   );
 }

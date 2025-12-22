@@ -1,0 +1,264 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() { return request.auth != null; }
+    function uid() { return request.auth.uid; }
+    function emailLower() { return request.auth.token.email.lower(); }
+    function email() { return request.auth.token.email; }
+
+    // ----- Sharing -----
+    // follow doc lives at: followers/{ownerUid}/accepted/{followerUid}
+    // required fields on follow doc (recommended):
+    // - status: "accepted"
+    // - followerUid, followerEmail, followerName, followerPhotoURL
+    // - share: { todos: bool, reminders: bool, journals: bool }
+
+    function followDoc(ownerUid, followerUid) {
+      return get(/databases/$(database)/documents/followers/$(ownerUid)/accepted/$(followerUid));
+    }
+
+    function shareDoc(ownerUid, friendUid) {
+      return get(/databases/$(database)/documents/shares/$(ownerUid)/friends/$(friendUid));
+    }
+
+    function ownerEmailLower(ownerUid) {
+      return get(/databases/$(database)/documents/userDirectory/$(ownerUid)).data.emailLower;
+    }
+
+    function followRequestId(ownerUid, followerUid) {
+      return followerUid + "_" + ownerEmailLower(ownerUid);
+    }
+
+    function followRequestDoc(ownerUid, followerUid) {
+      return get(/databases/$(database)/documents/followRequests/$(followRequestId(ownerUid, followerUid)));
+    }
+
+    function canReadArea(ownerUid, area) {
+      return signedIn() && (
+        ownerUid == uid() ||
+        (
+          exists(/databases/$(database)/documents/followers/$(ownerUid)/accepted/$(uid())) &&
+          followDoc(ownerUid, uid()).data.status == "accepted" &&
+          followDoc(ownerUid, uid()).data.share[area] == true
+        ) ||
+        (
+          exists(/databases/$(database)/documents/userDirectory/$(ownerUid)) &&
+          exists(/databases/$(database)/documents/followRequests/$(followRequestId(ownerUid, uid()))) &&
+          followRequestDoc(ownerUid, uid()).data.status == "accepted" &&
+          followRequestDoc(ownerUid, uid()).data.toUid == ownerUid &&
+          followRequestDoc(ownerUid, uid()).data.fromUid == uid() &&
+          (
+            !followRequestDoc(ownerUid, uid()).data.keys().hasAny(["share"]) ||
+            followRequestDoc(ownerUid, uid()).data.share[area] == true
+          )
+        ) ||
+        (
+          exists(/databases/$(database)/documents/shares/$(ownerUid)/friends/$(uid())) &&
+          shareDoc(ownerUid, uid()).data.status == "accepted" &&
+          shareDoc(ownerUid, uid()).data.share[area] == true
+        )
+      );
+    }
+
+    function isOwnerOnResource() {
+      return signedIn() && resource.data.ownerUid == uid();
+    }
+
+    function isOwnerOnRequest() {
+      return signedIn() && request.resource.data.ownerUid == uid();
+    }
+
+    function ownerUidUnchanged() {
+      return request.resource.data.ownerUid == resource.data.ownerUid;
+    }
+
+    // ----- Users: only self -----
+    match /users/{userId} {
+      allow create: if signedIn() && uid() == userId;
+      allow read, update, delete: if signedIn() && uid() == userId;
+    }
+
+    // ----- Follow requests -----
+    // requestId MUST be: "{fromUid}_{toEmailLower}"
+    match /followRequests/{requestId} {
+
+      // Sender creates pending request
+      allow create: if signedIn()
+        && request.resource.data.fromUid == uid()
+        && request.resource.data.fromEmail is string
+        && request.resource.data.fromEmail.lower() == emailLower()
+        && request.resource.data.status == "pending"
+        && request.resource.data.toEmailLower is string
+        && request.resource.data.toEmailLower == request.resource.data.toEmailLower.lower();
+
+      // Sender can read their requests; recipient can read requests to their email
+      allow read: if signedIn()
+        && (
+          resource == null ||
+          resource.data.fromUid == uid() ||
+          resource.data.toEmailLower == emailLower()
+        );
+
+      // Update rules:
+      // - Sender may revoke
+      // - Recipient may accept/decline (and set toUid/toName/toPhotoURL on accept)
+      allow update: if signedIn() && (
+        (
+          // Sender revoke
+          resource.data.fromUid == uid()
+          && request.resource.data.fromUid == resource.data.fromUid
+          && request.resource.data.toEmailLower == resource.data.toEmailLower
+          && request.resource.data.status == "revoked"
+        ) ||
+        (
+          // Sender can re-request after revoke/decline/accept
+          resource.data.fromUid == uid()
+          && request.resource.data.fromUid == resource.data.fromUid
+          && request.resource.data.toEmailLower == resource.data.toEmailLower
+          && request.resource.data.fromEmail.lower() == emailLower()
+          && request.resource.data.status == "pending"
+        ) ||
+        (
+          // Recipient accept / decline
+          resource.data.toEmailLower == emailLower()
+          && request.resource.data.fromUid == resource.data.fromUid
+          && request.resource.data.toEmailLower == resource.data.toEmailLower
+          && (request.resource.data.status == "accepted" || request.resource.data.status == "declined")
+          &&
+          (
+            // If accepted, require toUid == current user
+            request.resource.data.status != "accepted" ||
+            request.resource.data.toUid == uid()
+          )
+          &&
+          (
+            // If accepted, require share map
+            request.resource.data.status != "accepted" ||
+            request.resource.data.share is map
+          )
+          &&
+          (
+            // Optional: if toName is present, it must match the auth token name
+            !request.resource.data.keys().hasAny(["toName"]) ||
+            request.resource.data.toName == request.auth.token.name
+          )
+          &&
+          (
+            // Optional: if toPhotoURL is present, it must match auth token picture
+            !request.resource.data.keys().hasAny(["toPhotoURL"]) ||
+            request.resource.data.toPhotoURL == request.auth.token.picture
+          )
+        ) ||
+        (
+          // Recipient updates share after acceptance
+          resource.data.toEmailLower == emailLower()
+          && resource.data.status == "accepted"
+          && request.resource.data.status == "accepted"
+          && request.resource.data.fromUid == resource.data.fromUid
+          && request.resource.data.toEmailLower == resource.data.toEmailLower
+          && request.resource.data.toUid == resource.data.toUid
+          && request.resource.data.share is map
+        )
+      );
+
+      // No deletes (keeps audit trail simple)
+      allow delete: if false;
+    }
+
+    // ----- Legacy invites (read-only, preserved for existing users) -----
+    // inviteId MUST be: "{fromUid}_{toEmailLower}"
+    match /invites/{inviteId} {
+      allow read: if signedIn()
+        && (
+          resource == null ||
+          resource.data.fromUid == uid() ||
+          resource.data.toEmailLower == emailLower()
+        );
+      allow write: if false;
+    }
+
+    // ----- Followers -----
+    match /followers/{ownerUid}/accepted/{followerUid} {
+
+      // Both sides can read the relationship
+      allow read: if signedIn() && (
+        uid() == ownerUid ||
+        resource.data.followerUid == uid()
+      );
+
+      // Owner controls sharing settings
+      allow create: if signedIn()
+        && uid() == ownerUid
+        && request.resource.data.ownerUid == ownerUid
+        && request.resource.data.followerUid == followerUid;
+
+      allow update: if signedIn()
+        && uid() == ownerUid
+        && request.resource.data.ownerUid == ownerUid
+        && request.resource.data.followerUid == followerUid;
+
+      // Owner or follower can remove the relationship
+      allow delete: if signedIn() && (
+        uid() == ownerUid ||
+        uid() == followerUid
+      );
+    }
+
+    // ----- Public user directory (for follow requests) -----
+    match /userDirectory/{userId} {
+      allow read: if signedIn();
+      allow create, update: if signedIn() && uid() == userId;
+      allow delete: if signedIn() && uid() == userId;
+    }
+
+    // ----- Legacy shares (read-only, preserved for existing users) -----
+    match /shares/{ownerUid}/friends/{friendUid} {
+      allow read: if signedIn() && (uid() == ownerUid || uid() == friendUid);
+      allow create, update: if signedIn() && uid() == ownerUid;
+      allow delete: if signedIn() && (uid() == ownerUid || uid() == friendUid);
+    }
+
+    // ----- App data collections -----
+
+    match /todos/{id} {
+      allow read: if signedIn() && (resource == null || canReadArea(resource.data.ownerUid, "todos"));
+      allow create: if isOwnerOnRequest();
+      allow update: if isOwnerOnResource() && isOwnerOnRequest() && ownerUidUnchanged();
+      allow delete: if isOwnerOnResource();
+    }
+
+    match /todoSeries/{id} {
+      allow read: if signedIn() && (resource == null || canReadArea(resource.data.ownerUid, "todos"));
+      allow create: if isOwnerOnRequest();
+      allow update: if isOwnerOnResource() && isOwnerOnRequest() && ownerUidUnchanged();
+      allow delete: if isOwnerOnResource();
+    }
+
+    match /todoSeriesCompletions/{id} {
+      allow read: if signedIn() && (resource == null || canReadArea(resource.data.ownerUid, "todos"));
+      allow create: if isOwnerOnRequest();
+      allow update: if isOwnerOnResource() && isOwnerOnRequest() && ownerUidUnchanged();
+      allow delete: if isOwnerOnResource();
+    }
+
+    match /reminders/{id} {
+      allow read: if signedIn() && (resource == null || canReadArea(resource.data.ownerUid, "reminders"));
+      allow create: if isOwnerOnRequest();
+      allow update: if isOwnerOnResource() && isOwnerOnRequest() && ownerUidUnchanged();
+      allow delete: if isOwnerOnResource();
+    }
+
+    match /journals/{id} {
+      allow read: if signedIn() && (resource == null || canReadArea(resource.data.ownerUid, "journals"));
+      allow create: if isOwnerOnRequest();
+      allow update: if isOwnerOnResource() && isOwnerOnRequest() && ownerUidUnchanged();
+      allow delete: if isOwnerOnResource();
+    }
+
+    // Default deny for anything else
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

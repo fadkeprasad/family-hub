@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { doc, onSnapshot, serverTimestamp, setDoc } from "firebase/firestore";
+import { doc, onSnapshot, serverTimestamp, setDoc, type DocumentReference } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import useAuthUser from "../hooks/useAuthUser";
 import { ymdToday } from "../lib/dateUtil";
@@ -20,176 +20,167 @@ function addDaysYmd(ymd: string, delta: number) {
   return dateToYmd(dt);
 }
 
-type SaveState = "idle" | "saving" | "saved" | "error";
+type JournalDoc = {
+  ownerUid: string;
+  date: string; // YYYY-MM-DD
+  text: string;
+  updatedAt?: any;
+};
 
 export default function Journal() {
   const { user } = useAuthUser();
-  const uid = user?.uid ?? "";
+  const myUid = user?.uid ?? "";
+
+  // If you have a “view” system (my view vs friend view), set ownerUid accordingly:
+  // const ownerUid = viewOwnerUid;
+  const ownerUid = myUid;
+
+  const readOnly = ownerUid !== myUid;
 
   const [selectedDate, setSelectedDate] = useState(() => ymdToday());
   const [text, setText] = useState("");
-  const [saveState, setSaveState] = useState<SaveState>("idle");
-
-  // Prevent remote snapshots from overwriting while user is typing
-  const dirtyRef = useRef(false);
-  const lastRemoteTextRef = useRef<string>("");
-
-  const docId = useMemo(() => (uid ? `${uid}_${selectedDate}` : ""), [uid, selectedDate]);
-  const docRef = useMemo(() => (docId ? doc(db, "journals", docId) : null), [docId]);
+  const [status, setStatus] = useState<"idle" | "loading" | "saving" | "saved" | "error">("idle");
 
   const pretty = useMemo(() => {
     const dt = ymdToDate(selectedDate);
-    return dt.toLocaleDateString(undefined, {
-      year: "numeric",
-      month: "short",
-      day: "numeric",
-    });
+    return dt.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
   }, [selectedDate]);
 
-  // Load current day entry (live)
-  useEffect(() => {
-    if (!docRef) {
-      setText("");
-      setSaveState("idle");
-      dirtyRef.current = false;
-      lastRemoteTextRef.current = "";
-      return;
-    }
+  // --- Refs to prevent cursor jumps on mobile ---
+  const focusedRef = useRef(false);
+  const composingRef = useRef(false);
+  const dirtyRef = useRef(false);
+  const lastRemoteTextRef = useRef<string>("");
+  const saveTimerRef = useRef<number | null>(null);
+  const saveSeqRef = useRef(0);
 
-    setSaveState("idle");
+  function journalDocRef(uid: string, date: string): DocumentReference {
+    // Scalable doc id, avoids collisions across users
+    return doc(db, "journals", `${uid}_${date}`);
+  }
+
+  // Subscribe to remote journal doc (and load into editor safely)
+  useEffect(() => {
+    if (!ownerUid) return;
+
+    setStatus("loading");
+    dirtyRef.current = false;
+    lastRemoteTextRef.current = "";
+
+    const ref = journalDocRef(ownerUid, selectedDate);
 
     const unsub = onSnapshot(
-      docRef,
+      ref,
       (snap) => {
-        const remoteText = snap.exists() ? String((snap.data() as any).text ?? "") : "";
+        const remoteText = snap.exists() ? String((snap.data() as any)?.text ?? "") : "";
         lastRemoteTextRef.current = remoteText;
 
-        // Only apply remote updates if user isn't editing locally
-        if (!dirtyRef.current) {
-          setText(remoteText);
+        // Only apply remote updates if user is not actively editing.
+        // This is the key to stopping cursor jumps and “random deletes” on mobile.
+        if (!readOnly && (focusedRef.current || composingRef.current || dirtyRef.current)) {
+          setStatus((s) => (s === "saving" ? "saving" : "idle"));
+          return;
         }
+
+        setText(remoteText);
+        setStatus("idle");
       },
       () => {
-        setSaveState("error");
+        setStatus("error");
       },
     );
 
     return () => unsub();
-  }, [docRef]);
+  }, [ownerUid, selectedDate, readOnly]);
 
-  async function saveNow(currentText: string) {
-    if (!uid || !docRef) return;
+  function scheduleSave(nextText: string) {
+    if (!myUid || readOnly) return;
 
-    setSaveState("saving");
-    try {
-      await setDoc(
-        docRef,
-        {
-          ownerUid: uid,
+    if (saveTimerRef.current) window.clearTimeout(saveTimerRef.current);
+    setStatus("saving");
+
+    const seq = ++saveSeqRef.current;
+
+    saveTimerRef.current = window.setTimeout(async () => {
+      // If a newer save was scheduled, skip this one.
+      if (seq !== saveSeqRef.current) return;
+
+      try {
+        const ref = journalDocRef(myUid, selectedDate);
+        const payload: JournalDoc = {
+          ownerUid: myUid,
           date: selectedDate,
-          text: currentText,
+          text: nextText,
           updatedAt: serverTimestamp(),
-          createdAt: serverTimestamp(),
-        },
-        { merge: true },
-      );
+        };
 
-      dirtyRef.current = false;
-      setSaveState("saved");
+        await setDoc(ref, payload, { merge: true });
 
-      // drop back to idle after a moment so UI doesn’t feel “stuck”
-      window.setTimeout(() => {
-        setSaveState((s) => (s === "saved" ? "idle" : s));
-      }, 900);
-    } catch {
-      setSaveState("error");
-    }
+        // Mark clean only if the editor still matches what we saved
+        if (seq === saveSeqRef.current) {
+          dirtyRef.current = false;
+          setStatus("saved");
+          window.setTimeout(() => {
+            setStatus((s) => (s === "saved" ? "idle" : s));
+          }, 800);
+        }
+      } catch {
+        setStatus("error");
+      }
+    }, 450);
   }
 
-  // Debounced autosave
-  useEffect(() => {
-    if (!uid || !docRef) return;
+  function onChangeText(next: string) {
+    setText(next);
 
-    // If text equals last remote text and we're not dirty, do nothing
-    if (!dirtyRef.current) return;
+    if (readOnly) return;
 
-    const t = window.setTimeout(() => {
-      void saveNow(text);
-    }, 500);
-
-    return () => window.clearTimeout(t);
-  }, [text, uid, docRef]);
-
-  // Flush on date change/unmount (best-effort)
-  useEffect(() => {
-    return () => {
-      if (!dirtyRef.current) return;
-      if (!uid || !docRef) return;
-      // fire and forget
-      void saveNow(text);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedDate, uid, docRef]);
-
-  const statusLabel = useMemo(() => {
-    if (!uid) return "Sign in to save";
-    if (saveState === "saving") return "Saving…";
-    if (saveState === "saved") return "Saved";
-    if (saveState === "error") return "Save failed";
-    return "Autosave on";
-  }, [saveState, uid]);
+    // If remote already equals this, treat as clean
+    dirtyRef.current = next !== lastRemoteTextRef.current;
+    scheduleSave(next);
+  }
 
   return (
     <div className="px-4 pb-24 pt-4">
-      <div className="flex items-start justify-between">
+      <div className="flex items-start justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-extrabold tracking-tight text-zinc-50">Journal</h1>
-          <p className="mt-1 text-sm font-semibold text-zinc-300">{statusLabel}</p>
+          <h1 className="text-3xl font-extrabold tracking-tight text-zinc-50">Daily Journal</h1>
+          <p className="mt-2 text-base font-semibold text-zinc-300">Write a short entry for the day.</p>
         </div>
 
-        <div className="text-right">
-          <div className="text-sm font-extrabold text-zinc-100">{pretty}</div>
-          <div className="mt-1 text-xs font-semibold text-zinc-400">{selectedDate}</div>
+        <div className="text-right text-xs font-bold text-zinc-300">
+          {status === "loading" && "Loading"}
+          {status === "saving" && "Saving"}
+          {status === "saved" && "Saved"}
+          {status === "error" && "Save error"}
         </div>
       </div>
 
-      <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-4">
-        <div className="text-sm font-extrabold text-zinc-100">Choose date</div>
+      <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+        <div className="text-base font-extrabold text-zinc-100">Choose date</div>
 
-        <div className="mt-2 flex items-center gap-2">
+        <div className="mt-3 grid grid-cols-[48px_1fr_48px] items-center gap-3">
           <button
-            className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-3 text-xl font-extrabold text-zinc-100"
-            onClick={() => {
-              // flush before switching
-              if (dirtyRef.current) void saveNow(text);
-              setSelectedDate((d) => addDaysYmd(d, -1));
-              dirtyRef.current = false;
-            }}
-            aria-label="Previous day"
+            className="h-12 w-12 rounded-xl border border-zinc-800 bg-zinc-950/30 text-xl font-black text-zinc-100"
+            onClick={() => setSelectedDate((d) => addDaysYmd(d, -1))}
             type="button"
           >
             ‹
           </button>
 
-          <input
-            type="date"
-            className="w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-3 text-base font-bold text-zinc-100"
-            value={selectedDate}
-            onChange={(e) => {
-              if (dirtyRef.current) void saveNow(text);
-              setSelectedDate(e.target.value);
-              dirtyRef.current = false;
-            }}
-          />
+          <div className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3">
+            <div className="text-xs font-bold text-zinc-400">{pretty}</div>
+            <input
+              className="mt-1 w-full bg-transparent text-base font-extrabold text-zinc-100 outline-none"
+              type="date"
+              value={selectedDate}
+              onChange={(e) => setSelectedDate(e.target.value)}
+            />
+          </div>
 
           <button
-            className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-3 text-xl font-extrabold text-zinc-100"
-            onClick={() => {
-              if (dirtyRef.current) void saveNow(text);
-              setSelectedDate((d) => addDaysYmd(d, 1));
-              dirtyRef.current = false;
-            }}
-            aria-label="Next day"
+            className="h-12 w-12 rounded-xl border border-zinc-800 bg-zinc-950/30 text-xl font-black text-zinc-100"
+            onClick={() => setSelectedDate((d) => addDaysYmd(d, +1))}
             type="button"
           >
             ›
@@ -197,21 +188,35 @@ export default function Journal() {
         </div>
       </div>
 
-      <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
-        <div className="text-sm font-extrabold text-zinc-100">Entry</div>
+      <div className="mt-5 rounded-2xl border border-zinc-800 bg-zinc-900/40 p-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-base font-extrabold text-zinc-100">Entry</div>
+          {readOnly && <div className="text-xs font-bold text-zinc-400">Read only</div>}
+        </div>
 
         <textarea
-          className="mt-3 h-[50dvh] w-full resize-none rounded-2xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base font-semibold text-zinc-100 placeholder:text-zinc-500 focus:outline-none focus:ring-2 focus:ring-zinc-600"
-          placeholder="Write here…"
+          className="mt-3 h-[50dvh] w-full resize-none rounded-2xl border border-zinc-800 bg-zinc-950/30 px-4 py-4 text-base font-semibold text-zinc-100 placeholder:text-zinc-500 outline-none"
+          placeholder="Write here..."
           value={text}
-          onChange={(e) => {
-            const next = e.target.value;
-            setText(next);
-
-            // Mark dirty only if it differs from the last remote text
-            dirtyRef.current = next !== lastRemoteTextRef.current;
+          onChange={(e) => onChangeText(e.target.value)}
+          onFocus={() => {
+            focusedRef.current = true;
           }}
-          spellCheck={false}
+          onBlur={() => {
+            focusedRef.current = false;
+            // If user leaves the field and it’s dirty, force a final save quickly
+            if (!readOnly && dirtyRef.current) scheduleSave(text);
+          }}
+          onCompositionStart={() => {
+            composingRef.current = true;
+          }}
+          onCompositionEnd={() => {
+            composingRef.current = false;
+          }}
+          disabled={readOnly || !myUid}
+          autoCapitalize="sentences"
+          autoCorrect="on"
+          spellCheck
         />
       </div>
     </div>
