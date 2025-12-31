@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { doc, onSnapshot, serverTimestamp, setDoc, type DocumentReference } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import useAuthUser from "../hooks/useAuthUser";
+import { useView } from "../contexts/ViewContext";
 import { ymdToday } from "../lib/dateUtil";
 
 function ymdToDate(ymd: string) {
@@ -30,12 +31,13 @@ type JournalDoc = {
 export default function Journal() {
   const { user } = useAuthUser();
   const myUid = user?.uid ?? "";
+  const { activeOwnerUid, isMyView } = useView();
 
   // If you have a “view” system (my view vs friend view), set ownerUid accordingly:
   // const ownerUid = viewOwnerUid;
-  const ownerUid = myUid;
+  const ownerUid = activeOwnerUid || myUid;
 
-  const readOnly = ownerUid !== myUid;
+  const readOnly = !isMyView;
 
   const [selectedDate, setSelectedDate] = useState(() => ymdToday());
   const [text, setText] = useState("");

@@ -266,6 +266,7 @@ export default function Todos() {
   const [editing, setEditing] = useState<{ kind: Row["kind"]; id: string } | null>(null);
   const [editingText, setEditingText] = useState("");
   const prevRemainingRef = useRef<number>(-1);
+  const editInputRef = useRef<HTMLInputElement | null>(null);
 
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [sharePayload, setSharePayload] = useState<SharePayload | null>(null);
@@ -298,6 +299,15 @@ export default function Todos() {
     window.addEventListener("pointerdown", onDown);
     return () => window.removeEventListener("pointerdown", onDown);
   }, []);
+
+  useEffect(() => {
+    if (!editing) return;
+    const timer = window.setTimeout(() => {
+      editInputRef.current?.focus();
+      editInputRef.current?.select();
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [editing]);
 
   useEffect(() => {
     return () => {
@@ -758,6 +768,11 @@ export default function Todos() {
     }
   }
 
+  function closeEdit() {
+    setEditing(null);
+    setEditingText("");
+  }
+
   async function saveEdit(kind: Row["kind"], id: string) {
     if (!canEdit) return;
     const trimmed = editingText.trim();
@@ -770,8 +785,7 @@ export default function Todos() {
       } else {
         await updateDoc(doc(db, "todoSeries", id), { title: trimmed, updatedAt: serverTimestamp() });
       }
-      setEditing(null);
-      setEditingText("");
+      closeEdit();
     } catch (e: any) {
       setErr(e?.message ?? "Failed to update");
     }
@@ -819,40 +833,6 @@ export default function Todos() {
       {err && (
         <div className="mt-4 rounded-2xl border border-red-900/40 bg-red-950/40 p-3 text-sm font-semibold text-red-200 sm:p-4 sm:text-base">
           {err}
-        </div>
-      )}
-
-      {canEdit && editing && (
-        <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/50 p-3 sm:p-4">
-          <div className="text-sm font-extrabold text-zinc-100 sm:text-base">
-            Edit {editing.kind === "one" ? "to-do" : "recurring to-do"}
-          </div>
-          <input
-            className="mt-3 w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 sm:text-base"
-            value={editingText}
-            onChange={(e) => setEditingText(e.target.value)}
-            placeholder="Update the text"
-          />
-          <div className="mt-3 flex gap-2">
-            <button
-              className="flex-1 rounded-xl bg-emerald-600 py-3 text-sm font-extrabold text-white disabled:opacity-60 sm:text-base"
-              onClick={() => void saveEdit(editing.kind, editing.id)}
-              disabled={editingText.trim().length === 0}
-              type="button"
-            >
-              Save
-            </button>
-            <button
-              className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950/30 py-3 text-sm font-extrabold text-zinc-100 sm:text-base"
-              onClick={() => {
-                setEditing(null);
-                setEditingText("");
-              }}
-              type="button"
-            >
-              Cancel
-            </button>
-          </div>
         </div>
       )}
 
@@ -985,7 +965,7 @@ export default function Todos() {
 
                     {openMenuId === menuKey && (
                       <div
-                        className="absolute right-0 top-12 w-40 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/90 shadow-xl backdrop-blur"
+                        className="absolute right-0 top-12 z-[60] w-40 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-950/90 shadow-xl backdrop-blur"
                         onPointerDown={(e) => e.stopPropagation()}
                       >
                         <button
@@ -1255,6 +1235,62 @@ export default function Todos() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {canEdit && editing && (
+        <div
+          className="fixed inset-0 z-[65] flex items-end justify-center bg-black/60 px-4 pb-[calc(env(safe-area-inset-bottom)+96px)] pt-24"
+          onClick={closeEdit}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl border border-zinc-800 bg-zinc-950/95 p-4 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-base font-extrabold text-zinc-100">
+                  Edit {editing.kind === "one" ? "to-do" : "recurring to-do"}
+                </div>
+                <div className="mt-1 text-xs font-semibold text-zinc-400">Update the text and save.</div>
+              </div>
+              <button
+                className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs font-extrabold text-zinc-200"
+                type="button"
+                onClick={closeEdit}
+              >
+                Close
+              </button>
+            </div>
+
+            <input
+              ref={editInputRef}
+              className="mt-4 w-full rounded-xl border border-zinc-800 bg-zinc-950/30 px-4 py-3 text-sm text-zinc-100 placeholder:text-zinc-500 sm:text-base"
+              value={editingText}
+              onChange={(e) => setEditingText(e.target.value)}
+              placeholder="Update the text"
+            />
+
+            <div className="mt-3 flex gap-2">
+              <button
+                className="flex-1 rounded-xl bg-emerald-600 py-3 text-sm font-extrabold text-white disabled:opacity-60 sm:text-base"
+                onClick={() => void saveEdit(editing.kind, editing.id)}
+                disabled={editingText.trim().length === 0}
+                type="button"
+              >
+                Save
+              </button>
+              <button
+                className="flex-1 rounded-xl border border-zinc-800 bg-zinc-950/30 py-3 text-sm font-extrabold text-zinc-100 sm:text-base"
+                onClick={closeEdit}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
