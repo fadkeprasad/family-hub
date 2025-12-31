@@ -7,12 +7,14 @@ import {
   deleteDoc,
   doc,
   getDoc,
+  getDocs,
   onSnapshot,
   query,
   serverTimestamp,
   setDoc,
   updateDoc,
   where,
+  writeBatch,
 } from "firebase/firestore";
 import { db } from "../lib/firebase";
 import useAuthUser from "../hooks/useAuthUser";
@@ -27,6 +29,7 @@ type OneTodo = {
   title: string;
   dueDate: string;
   createdAt?: any;
+  autoForward?: boolean;
 
   // shared completion (new)
   completed?: boolean;
@@ -40,6 +43,20 @@ type OneTodo = {
 type Row =
   | { kind: "one"; id: string; title: string; done: boolean }
   | { kind: "series"; id: string; title: string; done: boolean };
+
+type SeriesCompletion = {
+  done: boolean;
+  completedAt?: any;
+};
+
+type SharePayload = {
+  title: string;
+  completedLabel: string;
+  emoji: string;
+  filename: string;
+  imageUrl?: string;
+  file?: File;
+};
 
 function legacyDoneFromMap(map: any): boolean {
   if (!map || typeof map !== "object") return false;
@@ -69,6 +86,170 @@ function toMillis(ts: any) {
   return 0;
 }
 
+function toDateFromTimestamp(ts: any) {
+  if (!ts) return null;
+  if (ts instanceof Date) return ts;
+  if (typeof ts?.toDate === "function") return ts.toDate();
+  if (typeof ts?.seconds === "number") return new Date(ts.seconds * 1000);
+  return null;
+}
+
+function formatCompletedAt(dt: Date) {
+  return dt.toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function slugify(text: string) {
+  return text
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function buildShareFilename(title: string, completedAt: Date) {
+  const slug = slugify(title) || "task";
+  const y = completedAt.getFullYear();
+  const m = String(completedAt.getMonth() + 1).padStart(2, "0");
+  const d = String(completedAt.getDate()).padStart(2, "0");
+  return `task-${slug}-${y}${m}${d}.png`;
+}
+
+const shareEmojis = ["🎉", "🏅", "✅", "💪"];
+
+function pickShareEmoji() {
+  return shareEmojis[Math.floor(Math.random() * shareEmojis.length)];
+}
+
+function drawRoundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const radius = Math.min(r, w / 2, h / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + radius, y);
+  ctx.arcTo(x + w, y, x + w, y + h, radius);
+  ctx.arcTo(x + w, y + h, x, y + h, radius);
+  ctx.arcTo(x, y + h, x, y, radius);
+  ctx.arcTo(x, y, x + w, y, radius);
+  ctx.closePath();
+}
+
+function wrapLines(ctx: CanvasRenderingContext2D, text: string, maxWidth: number) {
+  const words = text.split(/\s+/).filter(Boolean);
+  if (words.length === 0) return [text];
+  const lines: string[] = [];
+  let line = words[0];
+
+  for (let i = 1; i < words.length; i += 1) {
+    const next = `${line} ${words[i]}`;
+    if (ctx.measureText(next).width <= maxWidth) {
+      line = next;
+    } else {
+      lines.push(line);
+      line = words[i];
+    }
+  }
+
+  lines.push(line);
+  return lines;
+}
+
+function clampLines(lines: string[], maxLines: number) {
+  if (lines.length <= maxLines) return lines;
+  return lines.slice(0, maxLines);
+}
+
+function canvasToBlob(canvas: HTMLCanvasElement) {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error("Canvas export failed"));
+    }, "image/png");
+  });
+}
+
+async function buildShareImage({
+  title,
+  completedLabel,
+  emoji,
+}: {
+  title: string;
+  completedLabel: string;
+  emoji: string;
+}) {
+  const width = 1080;
+  const height = 1080;
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext("2d");
+  if (!ctx) throw new Error("Canvas not supported");
+
+  const gradient = ctx.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, "#0f172a");
+  gradient.addColorStop(1, "#064e3b");
+  ctx.fillStyle = gradient;
+  ctx.fillRect(0, 0, width, height);
+
+  ctx.fillStyle = "rgba(16, 185, 129, 0.22)";
+  ctx.beginPath();
+  ctx.arc(width * 0.82, height * 0.18, 190, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = "rgba(56, 189, 248, 0.18)";
+  ctx.beginPath();
+  ctx.arc(width * 0.12, height * 0.82, 230, 0, Math.PI * 2);
+  ctx.fill();
+
+  const cardPadding = 80;
+  const cardX = cardPadding;
+  const cardY = 150;
+  const cardW = width - cardPadding * 2;
+  const cardH = height - 300;
+
+  drawRoundedRect(ctx, cardX, cardY, cardW, cardH, 48);
+  ctx.fillStyle = "rgba(15, 23, 42, 0.86)";
+  ctx.fill();
+
+  ctx.textBaseline = "top";
+  ctx.textAlign = "left";
+
+  ctx.fillStyle = "rgba(148, 163, 184, 0.9)";
+  ctx.font = "600 34px ui-sans-serif, system-ui, -apple-system, sans-serif";
+  ctx.fillText("Task completed", cardX + 56, cardY + 44);
+
+  const safeTitle = title.trim() || "Task completed";
+  ctx.fillStyle = "#f8fafc";
+  ctx.font = "800 66px ui-sans-serif, system-ui, -apple-system, sans-serif";
+  const lines = clampLines(wrapLines(ctx, safeTitle, cardW - 112), 3);
+  const lineHeight = 78;
+  let textY = cardY + 120;
+  for (const line of lines) {
+    ctx.fillText(line, cardX + 56, textY);
+    textY += lineHeight;
+  }
+
+  ctx.font = "800 120px ui-sans-serif, system-ui, -apple-system, sans-serif";
+  ctx.fillText(emoji, cardX + 56, cardY + cardH - 250);
+
+  ctx.font = "600 34px ui-sans-serif, system-ui, -apple-system, sans-serif";
+  ctx.fillStyle = "#a7f3d0";
+  ctx.fillText(completedLabel, cardX + 56, cardY + cardH - 120);
+
+  ctx.textAlign = "right";
+  ctx.fillStyle = "rgba(226, 232, 240, 0.7)";
+  ctx.font = "700 28px ui-sans-serif, system-ui, -apple-system, sans-serif";
+  ctx.fillText("Family Hub", cardX + cardW - 56, cardY + cardH - 64);
+
+  const blob = await canvasToBlob(canvas);
+  const url = URL.createObjectURL(blob);
+
+  return { blob, url };
+}
+
 const weekdays = [
   { label: "Sun", value: 0 },
   { label: "Mon", value: 1 },
@@ -87,6 +268,12 @@ export default function Todos() {
   const prevRemainingRef = useRef<number>(-1);
 
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
+  const [sharePayload, setSharePayload] = useState<SharePayload | null>(null);
+  const [shareBusy, setShareBusy] = useState(false);
+  const [shareLoading, setShareLoading] = useState(false);
+  const [shareError, setShareError] = useState<string | null>(null);
+  const shareUrlRef = useRef<string | null>(null);
+  const autoForwardedDateRef = useRef<string | null>(null);
 
   const { user } = useAuthUser();
   const uid = user?.uid ?? "";
@@ -110,6 +297,12 @@ export default function Todos() {
     const onDown = () => setOpenMenuId(null);
     window.addEventListener("pointerdown", onDown);
     return () => window.removeEventListener("pointerdown", onDown);
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (shareUrlRef.current) URL.revokeObjectURL(shareUrlRef.current);
+    };
   }, []);
 
   const [selectedDate, setSelectedDate] = useState<string>(() => ymdToday());
@@ -162,6 +355,7 @@ export default function Todos() {
             title: String(data.title ?? ""),
             dueDate: String(data.dueDate ?? selectedDate),
             createdAt: data.createdAt,
+            autoForward: data.autoForward !== false,
 
             completed: typeof data.completed === "boolean" ? data.completed : undefined,
             completedAt: data.completedAt,
@@ -211,6 +405,50 @@ export default function Todos() {
     return () => unsub();
   }, [seriesCol, ownerUid]);
 
+  useEffect(() => {
+    if (!ownerUid || !canEdit) return;
+
+    const today = ymdToday();
+    if (selectedDate !== today) return;
+    if (autoForwardedDateRef.current === today) return;
+
+    let alive = true;
+
+    async function run() {
+      autoForwardedDateRef.current = today;
+      try {
+        const snap = await getDocs(query(todosCol, where("ownerUid", "==", ownerUid)));
+        if (!alive) return;
+
+        const batch = writeBatch(db);
+        let updates = 0;
+
+        for (const docSnap of snap.docs) {
+          const data = docSnap.data() as any;
+          const dueDate = String(data.dueDate ?? "");
+          if (!dueDate || dueDate >= today) continue;
+          if (data.autoForward === false) continue;
+
+          const done =
+            typeof data.completed === "boolean" ? data.completed : legacyDoneFromMap(data.completedBy);
+          if (done) continue;
+
+          batch.update(docSnap.ref, { dueDate: today, updatedAt: serverTimestamp() });
+          updates += 1;
+        }
+
+        if (updates > 0) await batch.commit();
+      } catch {
+        // ignore auto-forward failures
+      }
+    }
+
+    void run();
+    return () => {
+      alive = false;
+    };
+  }, [canEdit, ownerUid, selectedDate, todosCol]);
+
   async function addOneTime() {
     if (!canEdit) return;
     const trimmed = title.trim();
@@ -227,6 +465,7 @@ export default function Todos() {
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
         completed: false,
+        autoForward: true,
       });
       setTitle("");
     } catch (e: any) {
@@ -234,6 +473,83 @@ export default function Todos() {
     } finally {
       setBusy(false);
     }
+  }
+
+  function closeSharePrompt() {
+    if (shareUrlRef.current) {
+      URL.revokeObjectURL(shareUrlRef.current);
+      shareUrlRef.current = null;
+    }
+    setSharePayload(null);
+    setShareBusy(false);
+    setShareLoading(false);
+    setShareError(null);
+  }
+
+  async function openSharePrompt(title: string, completedAt: Date) {
+    const shareTitle = title.trim() || "Task completed";
+    const completedLabel = `Completed ${formatCompletedAt(completedAt)}`;
+    const emoji = pickShareEmoji();
+    const filename = buildShareFilename(shareTitle, completedAt);
+
+    setOpenMenuId(null);
+    setShareError(null);
+    setShareLoading(true);
+    setShareBusy(false);
+    setSharePayload({ title: shareTitle, completedLabel, emoji, filename });
+
+    if (shareUrlRef.current) {
+      URL.revokeObjectURL(shareUrlRef.current);
+      shareUrlRef.current = null;
+    }
+
+    try {
+      const { blob, url } = await buildShareImage({ title: shareTitle, completedLabel, emoji });
+      const file = new File([blob], filename, { type: "image/png" });
+      shareUrlRef.current = url;
+      setSharePayload((prev) => (prev ? { ...prev, imageUrl: url, file } : prev));
+    } catch {
+      setShareError("Could not create the share image.");
+    } finally {
+      setShareLoading(false);
+    }
+  }
+
+  async function shareImage() {
+    if (!sharePayload?.file) return;
+
+    setShareBusy(true);
+    setShareError(null);
+
+    try {
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.share &&
+        (!navigator.canShare || navigator.canShare({ files: [sharePayload.file] }))
+      ) {
+        await navigator.share({
+          title: "Task completed",
+          text: sharePayload.title,
+          files: [sharePayload.file],
+        });
+      } else {
+        setShareError("Sharing isn't supported here. Download the image instead.");
+      }
+    } catch (e: any) {
+      if (e?.name !== "AbortError") {
+        setShareError("Share failed. Try downloading instead.");
+      }
+    } finally {
+      setShareBusy(false);
+    }
+  }
+
+  function downloadShareImage() {
+    if (!sharePayload?.imageUrl) return;
+    const link = document.createElement("a");
+    link.href = sharePayload.imageUrl;
+    link.download = sharePayload.filename;
+    link.click();
   }
 
   function isOneDone(t: OneTodo) {
@@ -256,9 +572,27 @@ export default function Todos() {
         completedByRole: !isDone ? (userRole ?? null) : null,
         updatedAt: serverTimestamp(),
       });
-      if (!isDone) celebrateSmall();
+      if (!isDone) {
+        celebrateSmall();
+        void openSharePrompt(todo.title, new Date());
+      }
     } catch (e: any) {
       setErr(e?.message ?? "Failed to update to-do");
+    }
+  }
+
+  async function toggleAutoForward(id: string, next: boolean) {
+    if (!canEdit) return;
+    if (!uid) return;
+    setErr(null);
+
+    try {
+      await updateDoc(doc(db, "todos", id), {
+        autoForward: next,
+        updatedAt: serverTimestamp(),
+      });
+    } catch (e: any) {
+      setErr(e?.message ?? "Failed to update auto-forward");
     }
   }
 
@@ -342,7 +676,10 @@ export default function Todos() {
     [seriesItems, selectedDate],
   );
 
-  const [seriesDoneMap, setSeriesDoneMap] = useState<Record<string, boolean>>({});
+  const oneItemById = useMemo(() => new Map(oneItems.map((t) => [t.id, t])), [oneItems]);
+  const seriesById = useMemo(() => new Map(seriesForDay.map((s) => [s.id, s])), [seriesForDay]);
+
+  const [seriesDoneMap, setSeriesDoneMap] = useState<Record<string, SeriesCompletion>>({});
 
   // Listen for per-day completion docs for series on this date (shared completion)
   useEffect(() => {
@@ -362,10 +699,12 @@ export default function Todos() {
 
         const done =
           typeof data?.completed === "boolean" ? !!data.completed : legacyDoneFromMap(data?.completedBy);
+        const completedAt = data?.completedAt;
 
         setSeriesDoneMap((prev) => {
-          if (prev[series.id] === done) return prev;
-          return { ...prev, [series.id]: done };
+          const prevEntry = prev[series.id];
+          if (prevEntry?.done === done && prevEntry?.completedAt === completedAt) return prev;
+          return { ...prev, [series.id]: { done, completedAt } };
         });
       });
 
@@ -375,13 +714,13 @@ export default function Todos() {
     return () => unsubs.forEach((u) => u());
   }, [uid, ownerUid, selectedDate, seriesForDay]);
 
-  async function toggleSeriesDone(seriesId: string) {
+  async function toggleSeriesDone(series: TodoSeries) {
     if (!canEdit) return;
     if (!uid) return;
 
     setErr(null);
 
-    const completionId = `${seriesId}_${selectedDate}`;
+    const completionId = `${series.id}_${selectedDate}`;
     const ref = doc(db, "todoSeriesCompletions", completionId);
 
     try {
@@ -396,13 +735,14 @@ export default function Todos() {
       if (!snap.exists()) {
         await setDoc(ref, {
           ownerUid: uid,
-          seriesId,
+          seriesId: series.id,
           date: selectedDate,
           completed: true,
           completedAt: serverTimestamp(),
           completedByRole: userRole ?? null,
           updatedAt: serverTimestamp(),
         });
+        if (!isDone) void openSharePrompt(series.title, new Date());
         return;
       }
 
@@ -412,6 +752,7 @@ export default function Todos() {
         completedByRole: !isDone ? (userRole ?? null) : null,
         updatedAt: serverTimestamp(),
       });
+      if (!isDone) void openSharePrompt(series.title, new Date());
     } catch (e: any) {
       setErr(e?.message ?? "Failed to update recurring to-do");
     }
@@ -441,7 +782,7 @@ export default function Todos() {
       kind: "series",
       id: s.id,
       title: s.title,
-      done: !!seriesDoneMap[s.id],
+      done: !!seriesDoneMap[s.id]?.done,
     }));
 
     const one: Row[] = oneItems.map((t) => ({
@@ -560,6 +901,14 @@ export default function Todos() {
         {rows.map((r) => {
           const done = r.done;
           const menuKey = `${r.kind}_${r.id}`;
+          const oneTodo = r.kind === "one" ? oneItemById.get(r.id) : null;
+          const series = r.kind === "series" ? seriesById.get(r.id) : null;
+          const autoForwardOn = oneTodo?.autoForward !== false;
+          const completedAt =
+            r.kind === "one"
+              ? toDateFromTimestamp(oneTodo?.completedAt)
+              : toDateFromTimestamp(seriesDoneMap[r.id]?.completedAt);
+          const shareDate = completedAt ?? new Date();
 
           return (
             <div
@@ -574,8 +923,11 @@ export default function Todos() {
                   className="flex min-w-0 flex-1 items-start gap-3 text-left"
                   type="button"
                   onClick={() => {
-                    if (r.kind === "one") void toggleOne({ id: r.id } as any);
-                    else void toggleSeriesDone(r.id);
+                    if (r.kind === "one") {
+                      if (oneTodo) void toggleOne(oneTodo);
+                    } else if (series) {
+                      void toggleSeriesDone(series);
+                    }
                   }}
                 >
                   <span
@@ -647,6 +999,36 @@ export default function Todos() {
                         >
                           Edit
                         </button>
+
+                        <button
+                          className={[
+                            "w-full px-4 py-3 text-left text-sm font-extrabold",
+                            done ? "text-zinc-100 hover:bg-zinc-900/70" : "text-zinc-500 cursor-not-allowed",
+                          ].join(" ")}
+                          type="button"
+                          disabled={!done}
+                          onClick={() => {
+                            if (!done) return;
+                            setOpenMenuId(null);
+                            void openSharePrompt(r.title, shareDate);
+                          }}
+                        >
+                          Share
+                        </button>
+
+                        {r.kind === "one" && (
+                          <button
+                            className="w-full px-4 py-3 text-left text-sm font-extrabold text-zinc-100 hover:bg-zinc-900/70"
+                            type="button"
+                            onClick={() => {
+                              setOpenMenuId(null);
+                              if (!oneTodo) return;
+                              void toggleAutoForward(oneTodo.id, !autoForwardOn);
+                            }}
+                          >
+                            {autoForwardOn ? "Turn off auto-forward" : "Turn on auto-forward"}
+                          </button>
+                        )}
 
                         <button
                           className="w-full px-4 py-3 text-left text-sm font-extrabold text-red-200 hover:bg-zinc-900/70"
@@ -873,6 +1255,75 @@ export default function Todos() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {sharePayload && (
+        <div
+          className="fixed inset-0 z-[70] flex items-end justify-center bg-black/60 px-4 pb-[calc(env(safe-area-inset-bottom)+96px)] pt-24"
+          onClick={closeSharePrompt}
+        >
+          <div
+            className="w-full max-w-md rounded-3xl border border-zinc-800 bg-zinc-950/95 p-4 shadow-2xl"
+            role="dialog"
+            aria-modal="true"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-base font-extrabold text-zinc-100">Share this win</div>
+                <div className="mt-1 text-xs font-semibold text-zinc-400">
+                  Share to WhatsApp or download the image.
+                </div>
+              </div>
+              <button
+                className="rounded-xl border border-zinc-800 bg-zinc-950/40 px-3 py-2 text-xs font-extrabold text-zinc-200"
+                type="button"
+                onClick={closeSharePrompt}
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="mt-4 rounded-2xl border border-zinc-800 bg-zinc-900/60 p-3">
+              {sharePayload.imageUrl ? (
+                <img
+                  src={sharePayload.imageUrl}
+                  alt="Shareable task completion"
+                  className="w-full rounded-xl"
+                />
+              ) : (
+                <div className="flex h-64 items-center justify-center text-sm font-semibold text-zinc-400">
+                  {shareLoading ? "Preparing image..." : "Image unavailable."}
+                </div>
+              )}
+            </div>
+
+            {shareError && (
+              <div className="mt-3 rounded-xl border border-red-900/40 bg-red-950/40 px-3 py-2 text-xs font-semibold text-red-200">
+                {shareError}
+              </div>
+            )}
+
+            <div className="mt-4 grid grid-cols-2 gap-2">
+              <button
+                className="rounded-xl bg-emerald-600 py-3 text-sm font-extrabold text-white disabled:opacity-60"
+                type="button"
+                onClick={() => void shareImage()}
+                disabled={!sharePayload.file || shareLoading || shareBusy}
+              >
+                {shareBusy ? "Sharing..." : "Share"}
+              </button>
+              <button
+                className="rounded-xl border border-zinc-800 bg-zinc-950/30 py-3 text-sm font-extrabold text-zinc-100 disabled:opacity-60"
+                type="button"
+                onClick={downloadShareImage}
+                disabled={!sharePayload.imageUrl || shareLoading}
+              >
+                Download
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
