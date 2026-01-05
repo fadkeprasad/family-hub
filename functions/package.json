@@ -1,0 +1,13 @@
+{
+  "name": "family-hub-functions",
+  "private": true,
+  "main": "index.js",
+  "engines": {
+    "node": "18"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.6.0",
+    "firebase-functions": "^4.5.0",
+    "luxon": "^3.4.4"
+  }
+}

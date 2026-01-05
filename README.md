@@ -71,3 +71,9 @@ export default defineConfig([
   },
 ])
 ```
+
+## Push notifications
+
+- Set `VITE_FB_VAPID_KEY` in `.env.local` using the Web Push certificate key from Firebase Cloud Messaging.
+- Deploy Cloud Functions: `firebase deploy --only functions`.
+- Deploy hosting: `npm run build` then `firebase deploy --only hosting`.

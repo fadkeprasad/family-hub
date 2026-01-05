@@ -79,6 +79,22 @@ service cloud.firestore {
       allow read, update, delete: if signedIn() && uid() == userId;
     }
 
+    match /users/{userId}/pushTokens/{tokenId} {
+      allow read: if signedIn() && uid() == userId;
+      allow create, update: if signedIn()
+        && uid() == userId
+        && request.resource.data.ownerUid == userId;
+      allow delete: if signedIn() && uid() == userId;
+    }
+
+    match /users/{userId}/notificationSchedules/{scheduleId} {
+      allow read: if signedIn() && uid() == userId;
+      allow create, update: if signedIn()
+        && uid() == userId
+        && request.resource.data.ownerUid == userId;
+      allow delete: if signedIn() && uid() == userId;
+    }
+
     // ----- Follow requests -----
     // requestId MUST be: "{fromUid}_{toEmailLower}"
     match /followRequests/{requestId} {
