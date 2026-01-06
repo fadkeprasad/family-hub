@@ -1,4 +1,4 @@
-const functions = require("firebase-functions");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const { DateTime } = require("luxon");
 
@@ -62,10 +62,9 @@ async function sendToTokens(tokens, title, body) {
   return invalidTokens;
 }
 
-exports.sendScheduledNotifications = functions.pubsub
-  .schedule("every 1 minutes")
-  .timeZone("UTC")
-  .onRun(async () => {
+exports.sendScheduledNotifications = onSchedule(
+  { schedule: "every 1 minutes", timeZone: "UTC" },
+  async () => {
     const nowUtc = DateTime.utc();
     const cutoff = admin.firestore.Timestamp.fromDate(nowUtc.toJSDate());
 
@@ -117,4 +116,5 @@ exports.sendScheduledNotifications = functions.pubsub
     }
 
     return null;
-  });
+  },
+);
