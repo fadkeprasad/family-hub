@@ -8,6 +8,7 @@ import Reminders from "./pages/Reminders";
 import Journal from "./pages/Journal";
 import Login from "./pages/Login";
 import TodoCalendar from "./pages/TodoCalendar";
+import TodoStats from "./pages/TodoStats";
 import Friends from "./pages/Friends";
 import useAuthUser from "./hooks/useAuthUser";
 import { ViewProvider } from "./contexts/ViewContext";
@@ -21,6 +22,7 @@ function AuthedApp() {
           <Route path="/" element={<Home />} />
           <Route path="/todos" element={<Todos />} />
           <Route path="/todos/calendar/:kind/:id" element={<TodoCalendar />} />
+          <Route path="/todos/stats" element={<TodoStats />} />
           <Route path="/reminders" element={<Reminders />} />
           <Route path="/journal" element={<Journal />} />
           <Route path="/friends" element={<Friends />} />

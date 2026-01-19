@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+﻿import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { celebrateBigFireworks, celebrateSmall } from "../lib/celebrations";
 import {
@@ -119,7 +119,7 @@ function buildShareFilename(title: string, completedAt: Date) {
   return `task-${slug}-${y}${m}${d}.png`;
 }
 
-const shareEmojis = ["🎉", "🏅", "✅", "💪"];
+const shareEmojis = ["≡ƒÄë", "≡ƒÅà", "Γ£à", "≡ƒÆ¬"];
 
 function pickShareEmoji() {
   return shareEmojis[Math.floor(Math.random() * shareEmojis.length)];
@@ -821,7 +821,18 @@ export default function Todos() {
 
   return (
     <div>
-      <h1 className="text-2xl font-extrabold tracking-tight text-zinc-50 sm:text-3xl">To-dos</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-extrabold tracking-tight text-zinc-50 sm:text-3xl">To-dos</h1>
+        <button
+          className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-900/40 text-base text-zinc-100 sm:h-10 sm:w-10"
+          onClick={() => nav("/todos/stats")}
+          type="button"
+          aria-label="Open to-do stats"
+          title="To-do stats"
+        >
+          📊
+        </button>
+      </div>
       <p className="mt-1 text-sm font-semibold text-zinc-300 sm:text-base">{remaining} remaining for this day</p>
 
       {!canEdit && (
@@ -848,7 +859,7 @@ export default function Todos() {
               aria-label="Previous day"
               type="button"
             >
-              ‹
+              ΓÇ╣
             </button>
 
             <input
@@ -864,7 +875,7 @@ export default function Todos() {
               aria-label="Next day"
               type="button"
             >
-              ›
+              ΓÇ║
             </button>
           </div>
         </div>
@@ -918,7 +929,7 @@ export default function Todos() {
                         : "border-zinc-700 bg-zinc-950/20 text-zinc-500",
                     ].join(" ")}
                   >
-                    {done ? "✓" : ""}
+                    {done ? "Γ£ô" : ""}
                   </span>
 
                   <div className="min-w-0">
@@ -941,10 +952,10 @@ export default function Todos() {
                     className="inline-flex h-9 w-9 items-center justify-center rounded-xl border border-zinc-800 bg-zinc-950/30 text-base text-zinc-100 sm:h-10 sm:w-10"
                     onClick={() => nav(`/todos/calendar/${r.kind}/${r.id}`)}
                     type="button"
-                    aria-label="Open calendar"
-                    title="Calendar"
+                    aria-label="Open stats"
+                    title="Stats"
                   >
-                    📅
+                    📊
                   </button>
 
                   <div className="relative">
@@ -960,7 +971,7 @@ export default function Todos() {
                         setOpenMenuId((prev) => (prev === menuKey ? null : menuKey));
                       }}
                     >
-                      ⋯
+                      Γï»
                     </button>
 
                     {openMenuId === menuKey && (
