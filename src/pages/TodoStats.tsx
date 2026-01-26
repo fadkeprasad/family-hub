@@ -9,17 +9,15 @@ import type { SeriesEnd, SeriesPattern, TodoSeries } from "../lib/recurrence";
 import { occursOn } from "../lib/recurrence";
 import ProgressRing from "../components/ProgressRing";
 
-type OneTodo = {
-  id: string;
-  title: string;
-  dueDate: string;
-  completed?: boolean;
-  completedBy?: Record<string, boolean>;
-};
-
 type DayStats = {
   scheduled: number;
   completed: number;
+};
+
+type SeriesCompletion = {
+  seriesId: string;
+  date: string;
+  done: boolean;
 };
 
 type Rollup = {
@@ -31,12 +29,13 @@ type Rollup = {
 
 type TableRow = {
   id: string;
-  kind: "one" | "series";
   title: string;
   completedCount: number;
   completionRate: number;
   longestStreak: number;
 };
+
+const ICON_FLAME = "\u{1F525}";
 
 function legacyDoneFromMap(map: any): boolean {
   if (!map || typeof map !== "object") return false;
@@ -57,16 +56,32 @@ function eachDay(startYmd: string, endYmd: string, cb: (ymd: string) => void) {
   }
 }
 
+function isYmdString(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function ymdFromValue(value: any) {
+  if (!value) return "";
+  if (typeof value === "string") {
+    return isYmdString(value) ? value : "";
+  }
+  if (value instanceof Date) return dateToYmd(value);
+  if (typeof value?.toDate === "function") return dateToYmd(value.toDate());
+  if (typeof value?.seconds === "number") return dateToYmd(new Date(value.seconds * 1000));
+  return "";
+}
+
 function parseCompletionDoc(docId: string, data: any): SeriesCompletion | null {
   const fromDocSeriesId = String(data?.seriesId ?? "");
-  const fromDocDate = String(data?.date ?? "");
+  const fromDocDate = ymdFromValue(data?.date);
   const docIdSep = docId.lastIndexOf("_");
 
   const fromIdSeries = docIdSep > 0 ? docId.slice(0, docIdSep) : "";
-  const fromIdDate = docIdSep > 0 ? docId.slice(docIdSep + 1) : "";
+  const fromIdDateRaw = docIdSep > 0 ? docId.slice(docIdSep + 1) : "";
+  const fromIdDate = isYmdString(fromIdDateRaw) ? fromIdDateRaw : "";
 
   const seriesId = fromDocSeriesId || fromIdSeries;
-  const date = fromDocDate || fromIdDate;
+  const date = fromIdDate || fromDocDate;
   if (!seriesId || !date) return null;
 
   const done =
@@ -80,22 +95,6 @@ function bumpDay(map: Map<string, DayStats>, ymd: string, done: boolean) {
   prev.scheduled += 1;
   if (done) prev.completed += 1;
   map.set(ymd, prev);
-}
-
-function computeOneRollup(todo: OneTodo, todayYmd: string, dayStats: Map<string, DayStats>): Rollup {
-  const done = typeof todo.completed === "boolean" ? todo.completed : legacyDoneFromMap(todo.completedBy);
-  const scheduled = done || todo.dueDate <= todayYmd ? 1 : 0;
-  const completed = done ? 1 : 0;
-
-  if (scheduled > 0) bumpDay(dayStats, todo.dueDate, done);
-
-  const streak = done ? 1 : 0;
-  return {
-    totalScheduled: scheduled,
-    totalCompleted: completed,
-    currentStreak: streak,
-    longestStreak: streak,
-  };
 }
 
 function computeSeriesRollup(
@@ -141,43 +140,12 @@ export default function TodoStats() {
 
   const todayYmd = ymdToday();
 
-  const [oneItems, setOneItems] = useState<OneTodo[]>([]);
   const [seriesItems, setSeriesItems] = useState<TodoSeries[]>([]);
   const [seriesCompletions, setSeriesCompletions] = useState<Record<string, Record<string, boolean>>>({});
   const [err, setErr] = useState<string | null>(null);
 
-  const todosCol = useMemo(() => collection(db, "todos"), []);
   const seriesCol = useMemo(() => collection(db, "todoSeries"), []);
   const completionsCol = useMemo(() => collection(db, "todoSeriesCompletions"), []);
-
-  useEffect(() => {
-    if (!ownerUid) {
-      setOneItems([]);
-      return;
-    }
-
-    const q = query(todosCol, where("ownerUid", "==", ownerUid));
-    const unsub = onSnapshot(
-      q,
-      (snap) => {
-        const next: OneTodo[] = snap.docs.map((d) => {
-          const data = d.data() as any;
-          return {
-            id: d.id,
-            title: String(data.title ?? ""),
-            dueDate: String(data.dueDate ?? "1970-01-01"),
-            completed: typeof data.completed === "boolean" ? data.completed : undefined,
-            completedBy: data.completedBy,
-          };
-        });
-        setOneItems(next);
-        setErr(null);
-      },
-      (e) => setErr(e?.message ?? "Failed to load to-dos"),
-    );
-
-    return () => unsub();
-  }, [ownerUid, todosCol]);
 
   useEffect(() => {
     if (!ownerUid) {
@@ -242,23 +210,6 @@ export default function TodoStats() {
     let totalScheduled = 0;
     let totalCompleted = 0;
 
-    for (const todo of oneItems) {
-      const rollup = computeOneRollup(todo, todayYmd, dayStats);
-      const rate = rollup.totalScheduled > 0 ? rollup.totalCompleted / rollup.totalScheduled : 0;
-
-      rows.push({
-        id: todo.id,
-        kind: "one",
-        title: todo.title,
-        completedCount: rollup.totalCompleted,
-        completionRate: rate,
-        longestStreak: rollup.longestStreak,
-      });
-
-      totalScheduled += rollup.totalScheduled;
-      totalCompleted += rollup.totalCompleted;
-    }
-
     for (const series of activeSeries) {
       const completions = seriesCompletions[series.id] ?? {};
       const rollup = computeSeriesRollup(series, completions, todayYmd, dayStats);
@@ -266,7 +217,6 @@ export default function TodoStats() {
 
       rows.push({
         id: series.id,
-        kind: "series",
         title: series.title,
         completedCount: rollup.totalCompleted,
         completionRate: rate,
@@ -307,7 +257,7 @@ export default function TodoStats() {
       powerDays,
       streak,
     };
-  }, [oneItems, seriesItems, seriesCompletions, todayYmd]);
+  }, [seriesItems, seriesCompletions, todayYmd]);
 
   return (
     <div>
@@ -320,7 +270,7 @@ export default function TodoStats() {
         </button>
         <div className="text-center">
           <div className="text-base font-extrabold text-zinc-100">To-do stats</div>
-          <div className="mt-1 text-xs font-semibold text-zinc-400">All active tasks</div>
+          <div className="mt-1 text-xs font-semibold text-zinc-400">Active recurring tasks</div>
         </div>
         <div className="w-[72px]" />
       </div>
@@ -342,7 +292,7 @@ export default function TodoStats() {
               </div>
               <div className="text-xs font-semibold text-zinc-400">Scheduled-day streak</div>
             </div>
-            <div className="text-2xl">🔥</div>
+            <div className="text-2xl">{ICON_FLAME}</div>
           </div>
         </div>
 
@@ -375,7 +325,7 @@ export default function TodoStats() {
 
       <div className="mt-5 overflow-hidden rounded-2xl border border-zinc-800 bg-zinc-900/40">
         <div className="border-b border-zinc-800 px-3 py-2 text-xs font-extrabold uppercase tracking-wide text-zinc-400">
-          Active to-dos
+          Active recurring to-dos
         </div>
         <div className="overflow-x-auto">
           <table className="min-w-[560px] w-full text-left text-sm">
@@ -391,7 +341,7 @@ export default function TodoStats() {
               {stats.rows.length === 0 && (
                 <tr>
                   <td className="px-3 py-4 text-sm font-semibold text-zinc-300" colSpan={4}>
-                    No active to-dos yet.
+                    No recurring to-dos yet.
                   </td>
                 </tr>
               )}
@@ -400,12 +350,7 @@ export default function TodoStats() {
                 const pct = Math.round(row.completionRate * 100);
                 return (
                   <tr key={row.id} className="border-t border-zinc-800/60">
-                    <td className="px-3 py-3 text-sm font-semibold text-zinc-100">
-                      {row.title}
-                      <span className="ml-2 text-xs font-semibold text-zinc-500">
-                        {row.kind === "series" ? "Recurring" : "One-time"}
-                      </span>
-                    </td>
+                    <td className="px-3 py-3 text-sm font-semibold text-zinc-100">{row.title}</td>
                     <td className="px-3 py-3 text-sm font-semibold text-zinc-200">
                       {row.completedCount}
                     </td>

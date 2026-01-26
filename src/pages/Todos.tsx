@@ -119,7 +119,12 @@ function buildShareFilename(title: string, completedAt: Date) {
   return `task-${slug}-${y}${m}${d}.png`;
 }
 
-const shareEmojis = ["≡ƒÄë", "≡ƒÅà", "Γ£à", "≡ƒÆ¬"];
+const ICON_STATS = "\u{1F4CA}";
+const ICON_CHECK = "\u2713";
+const ICON_PREV_DAY = "\u2039";
+const ICON_NEXT_DAY = "\u203A";
+const ICON_MORE = "\u22EF";
+const shareEmojis = ["\u{1F389}", "\u{1F44F}", "\u{1F4AA}", "\u{1F525}"];
 
 function pickShareEmoji() {
   return shareEmojis[Math.floor(Math.random() * shareEmojis.length)];
@@ -830,7 +835,7 @@ export default function Todos() {
           aria-label="Open to-do stats"
           title="To-do stats"
         >
-          📊
+          {ICON_STATS}
         </button>
       </div>
       <p className="mt-1 text-sm font-semibold text-zinc-300 sm:text-base">{remaining} remaining for this day</p>
@@ -859,7 +864,7 @@ export default function Todos() {
               aria-label="Previous day"
               type="button"
             >
-              ΓÇ╣
+              {ICON_PREV_DAY}
             </button>
 
             <input
@@ -875,7 +880,7 @@ export default function Todos() {
               aria-label="Next day"
               type="button"
             >
-              ΓÇ║
+              {ICON_NEXT_DAY}
             </button>
           </div>
         </div>
@@ -929,7 +934,7 @@ export default function Todos() {
                         : "border-zinc-700 bg-zinc-950/20 text-zinc-500",
                     ].join(" ")}
                   >
-                    {done ? "Γ£ô" : ""}
+                    {done ? ICON_CHECK : ""}
                   </span>
 
                   <div className="min-w-0">
@@ -955,7 +960,7 @@ export default function Todos() {
                     aria-label="Open stats"
                     title="Stats"
                   >
-                    📊
+                    {ICON_STATS}
                   </button>
 
                   <div className="relative">
@@ -971,7 +976,7 @@ export default function Todos() {
                         setOpenMenuId((prev) => (prev === menuKey ? null : menuKey));
                       }}
                     >
-                      Γï»
+                      {ICON_MORE}
                     </button>
 
                     {openMenuId === menuKey && (
@@ -1377,3 +1382,4 @@ export default function Todos() {
     </div>
   );
 }
+

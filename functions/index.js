@@ -1,4 +1,5 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const { DateTime } = require("luxon");
 
@@ -32,7 +33,9 @@ function computeNextRunAt(time, timeZone, nowUtc) {
 }
 
 async function sendToTokens(tokens, title, body) {
-  if (!tokens.length) return [];
+  if (!tokens.length) {
+    return { invalidTokens: [], successCount: 0, failureCount: 0, errors: [] };
+  }
 
   const response = await messaging.sendEachForMulticast({
     tokens,
@@ -46,9 +49,11 @@ async function sendToTokens(tokens, title, body) {
   });
 
   const invalidTokens = [];
+  const errors = [];
   response.responses.forEach((res, idx) => {
     if (!res.success) {
       const code = res.error?.code || "";
+      errors.push({ code, message: res.error?.message || "" });
       if (
         code === "messaging/registration-token-not-registered" ||
         code === "messaging/invalid-registration-token" ||
@@ -59,7 +64,12 @@ async function sendToTokens(tokens, title, body) {
     }
   });
 
-  return invalidTokens;
+  return {
+    invalidTokens,
+    successCount: response.successCount,
+    failureCount: response.failureCount,
+    errors,
+  };
 }
 
 exports.sendScheduledNotifications = onSchedule(
@@ -94,16 +104,25 @@ exports.sendScheduledNotifications = onSchedule(
       const title = "Family Hub reminder";
       const body = "Check today's to-dos and journal.";
 
-      const invalidTokens = tokens.length ? await sendToTokens(tokens, title, body) : [];
+      const result = tokens.length ? await sendToTokens(tokens, title, body) : null;
+      const invalidTokens = result?.invalidTokens ?? [];
 
       const update = {
         nextRunAt: admin.firestore.Timestamp.fromDate(nextRunAt.toJSDate()),
         updatedAt: admin.firestore.FieldValue.serverTimestamp(),
       };
-      if (tokens.length) {
+      if (result?.successCount) {
         update.lastSentAt = admin.firestore.FieldValue.serverTimestamp();
       }
       await scheduleDoc.ref.set(update, { merge: true });
+
+      if (result && result.failureCount) {
+        console.warn("Notification send had failures", {
+          ownerUid,
+          failureCount: result.failureCount,
+          errors: result.errors.slice(0, 3),
+        });
+      }
 
       if (invalidTokens.length > 0) {
         const batch = db.batch();
@@ -118,3 +137,42 @@ exports.sendScheduledNotifications = onSchedule(
     return null;
   },
 );
+
+exports.sendTestNotification = onCall(async (request) => {
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("unauthenticated", "Sign in required.");
+
+  const tokensSnap = await db.collection("users").doc(uid).collection("pushTokens").get();
+  const tokens = tokensSnap.docs
+    .map((d) => String(d.data().token || ""))
+    .filter((t) => t);
+
+  if (tokens.length === 0) {
+    throw new HttpsError("failed-precondition", "No push tokens registered for this user.");
+  }
+
+  const title = "Family Hub test";
+  const body = "This is a test notification.";
+
+  const result = await sendToTokens(tokens, title, body);
+
+  if (result.successCount === 0) {
+    const firstError = result.errors[0]?.code || "unknown";
+    throw new HttpsError("internal", `Push failed: ${firstError}`);
+  }
+
+  if (result.invalidTokens.length > 0) {
+    const batch = db.batch();
+    for (const token of result.invalidTokens) {
+      const tokenId = tokenToId(token);
+      batch.delete(db.collection("users").doc(uid).collection("pushTokens").doc(tokenId));
+    }
+    await batch.commit();
+  }
+
+  return {
+    sent: result.successCount,
+    failed: result.failureCount,
+    invalid: result.invalidTokens.length,
+  };
+});

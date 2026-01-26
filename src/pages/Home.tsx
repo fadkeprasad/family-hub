@@ -18,7 +18,8 @@ import {
   updateDoc,
   writeBatch,
 } from "firebase/firestore";
-import { deleteToken, getMessaging, getToken, isSupported } from "firebase/messaging";
+import { deleteToken, getMessaging, getToken, isSupported, onMessage } from "firebase/messaging";
+import { getFunctions, httpsCallable } from "firebase/functions";
 import { app, auth, db } from "../lib/firebase";
 import useFriendRoster from "../hooks/useFriendRoster";
 import { useView } from "../contexts/ViewContext";
@@ -70,7 +71,9 @@ export default function Home() {
   const [notifSupported, setNotifSupported] = useState(false);
   const [notifPermission, setNotifPermission] = useState<NotificationPermission | "unsupported">("default");
   const [notifBusy, setNotifBusy] = useState(false);
+  const [testBusy, setTestBusy] = useState(false);
   const [notifErr, setNotifErr] = useState<string | null>(null);
+  const [notifInfo, setNotifInfo] = useState<string | null>(null);
   const [notifSchedules, setNotifSchedules] = useState<NotificationSchedule[]>([]);
   const [newTime, setNewTime] = useState("09:00");
   const [deviceTokenId, setDeviceTokenId] = useState<string | null>(null);
@@ -148,6 +151,28 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    if (!notifSupported) return;
+    if (typeof window === "undefined" || !("Notification" in window)) return;
+    if (Notification.permission !== "granted") return;
+
+    try {
+      const messaging = getMessaging(app);
+      const unsub = onMessage(messaging, (payload) => {
+        const title = payload.notification?.title || "Family Hub";
+        const body = payload.notification?.body || "You have a new reminder.";
+        try {
+          new Notification(title, { body });
+        } catch {
+          // Ignore notification errors in foreground.
+        }
+      });
+      return () => unsub();
+    } catch {
+      return undefined;
+    }
+  }, [notifSupported, notifPermission]);
+
+  useEffect(() => {
     if (!myUid) {
       setDeviceTokenId(null);
       return;
@@ -200,6 +225,7 @@ export default function Home() {
   async function enableNotifications() {
     if (!myUid || notifBusy) return;
     setNotifErr(null);
+    setNotifInfo(null);
     setNotifBusy(true);
 
     try {
@@ -271,6 +297,7 @@ export default function Home() {
 
       window.localStorage.setItem(tokenStorageKey(myUid), tokenId);
       setDeviceTokenId(tokenId);
+      setNotifInfo("Notifications enabled on this device.");
     } catch (e: any) {
       setNotifErr(e?.message ?? "Failed to enable notifications.");
     } finally {
@@ -281,11 +308,13 @@ export default function Home() {
   async function disableNotifications() {
     if (!myUid || notifBusy || !deviceTokenId) return;
     setNotifErr(null);
+    setNotifInfo(null);
     setNotifBusy(true);
     try {
       await deleteDoc(doc(db, "users", myUid, "pushTokens", deviceTokenId));
       window.localStorage.removeItem(tokenStorageKey(myUid));
       setDeviceTokenId(null);
+      setNotifInfo("Notifications disabled on this device.");
       if (notifSupported) {
         try {
           const messaging = getMessaging(app);
@@ -302,6 +331,7 @@ export default function Home() {
   async function addSchedule() {
     if (!myUid || notifBusy) return;
     setNotifErr(null);
+    setNotifInfo(null);
     setNotifBusy(true);
     try {
       const next = computeNextRunAt(newTime);
@@ -330,6 +360,7 @@ export default function Home() {
     const next = computeNextRunAt(time);
     if (!next) return;
     try {
+      setNotifInfo(null);
       await updateDoc(doc(db, "users", myUid, "notificationSchedules", schedule.id), {
         time,
         timeZone: getLocalTimeZone(),
@@ -346,6 +377,7 @@ export default function Home() {
     const nextEnabled = !schedule.enabled;
     const nextRunAt = nextEnabled ? computeNextRunAt(schedule.time) : null;
     try {
+      setNotifInfo(null);
       await updateDoc(doc(db, "users", myUid, "notificationSchedules", schedule.id), {
         enabled: nextEnabled,
         nextRunAt: nextRunAt ? Timestamp.fromDate(nextRunAt) : null,
@@ -359,9 +391,33 @@ export default function Home() {
   async function removeSchedule(scheduleId: string) {
     if (!myUid) return;
     try {
+      setNotifInfo(null);
       await deleteDoc(doc(db, "users", myUid, "notificationSchedules", scheduleId));
     } catch (e: any) {
       setNotifErr(e?.message ?? "Failed to remove schedule.");
+    }
+  }
+
+  async function sendTestNotification() {
+    if (!myUid || testBusy) return;
+    setNotifErr(null);
+    setNotifInfo(null);
+    setTestBusy(true);
+    try {
+      const fn = httpsCallable(getFunctions(app), "sendTestNotification");
+      const res = await fn();
+      const data = res.data as { sent?: number; failed?: number; invalid?: number };
+      const sent = data?.sent ?? 0;
+      const failed = data?.failed ?? 0;
+      const invalid = data?.invalid ?? 0;
+      let message = `Test sent to ${sent} device${sent === 1 ? "" : "s"}.`;
+      if (failed) message += ` ${failed} failed.`;
+      if (invalid) message += ` ${invalid} invalid token${invalid === 1 ? "" : "s"} removed.`;
+      setNotifInfo(message);
+    } catch (e: any) {
+      setNotifErr(e?.message ?? "Failed to send test notification.");
+    } finally {
+      setTestBusy(false);
     }
   }
 
@@ -485,18 +541,31 @@ export default function Home() {
                     Set daily reminders for your hub.
                   </div>
                 </div>
-                <button
-                  className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-extrabold text-white disabled:opacity-60"
-                  type="button"
-                  onClick={() => void (deviceTokenId ? disableNotifications() : enableNotifications())}
-                  disabled={notifBusy || !myUid || !notifSupported}
-                >
-                  {deviceTokenId ? "Disable" : "Enable"}
-                </button>
+                <div className="flex items-center gap-2">
+                  <button
+                    className="rounded-xl bg-emerald-600 px-3 py-2 text-xs font-extrabold text-white disabled:opacity-60"
+                    type="button"
+                    onClick={() => void (deviceTokenId ? disableNotifications() : enableNotifications())}
+                    disabled={notifBusy || !myUid || !notifSupported}
+                  >
+                    {deviceTokenId ? "Disable" : "Enable"}
+                  </button>
+                  <button
+                    className="rounded-xl border border-zinc-800 bg-zinc-950/30 px-3 py-2 text-xs font-extrabold text-zinc-200 disabled:opacity-60"
+                    type="button"
+                    onClick={() => void sendTestNotification()}
+                    disabled={!deviceTokenId || testBusy || !myUid}
+                  >
+                    {testBusy ? "Sending..." : "Send test"}
+                  </button>
+                </div>
               </div>
 
               <div className="mt-2 text-xs font-semibold text-zinc-400">
                 {notifSupported ? "Supported browser" : "Push not supported here."} / Permission: {notifPermission}
+              </div>
+              <div className="mt-1 text-xs font-semibold text-zinc-400">
+                Test sends to every device where you enabled notifications.
               </div>
               {deviceTokenId && (
                 <div className="mt-1 text-xs font-semibold text-emerald-200">Enabled on this device.</div>
@@ -567,11 +636,16 @@ export default function Home() {
               </div>
             </div>
 
-            {(notifErr || accountErr) && (
+            {(notifErr || notifInfo || accountErr) && (
               <div className="mt-3 grid gap-2">
                 {notifErr && (
                   <div className="rounded-xl border border-red-900/40 bg-red-950/40 px-3 py-2 text-xs font-semibold text-red-200">
                     {notifErr}
+                  </div>
+                )}
+                {notifInfo && (
+                  <div className="rounded-xl border border-emerald-900/40 bg-emerald-950/40 px-3 py-2 text-xs font-semibold text-emerald-200">
+                    {notifInfo}
                   </div>
                 )}
                 {accountErr && (

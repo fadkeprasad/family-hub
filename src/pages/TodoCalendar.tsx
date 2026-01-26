@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { collection, doc, getDoc, onSnapshot, query, where } from "firebase/firestore";
 import { db } from "../lib/firebase";
@@ -6,12 +6,15 @@ import { ymdToday } from "../lib/dateUtil";
 import type { SeriesEnd, SeriesPattern, TodoSeries } from "../lib/recurrence";
 import { occursOn } from "../lib/recurrence";
 import ProgressRing from "../components/ProgressRing";
+import useAuthUser from "../hooks/useAuthUser";
+import { useView } from "../contexts/ViewContext";
 
 type OneTodo = {
   id: string;
   title: string;
   dueDate: string;
   completed?: boolean;
+  completedBy?: Record<string, boolean>;
 };
 
 function legacyDoneFromMap(m?: Record<string, boolean>) {
@@ -43,6 +46,11 @@ function daysInMonth(dt: Date) {
   return new Date(dt.getFullYear(), dt.getMonth() + 1, 0).getDate();
 }
 
+const ICON_BACK = "\u2190";
+const ICON_PREV_MONTH = "\u2039";
+const ICON_NEXT_MONTH = "\u203A";
+const ICON_FLAME = "\u{1F525}";
+
 function minYmd(a: string, b: string) {
   return a <= b ? a : b;
 }
@@ -63,6 +71,21 @@ function completionDateFromId(seriesId: string, docId: string) {
   return docId.slice(prefix.length);
 }
 
+function isYmdString(value: string) {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+function ymdFromValue(value: any) {
+  if (!value) return "";
+  if (typeof value === "string") {
+    return isYmdString(value) ? value : "";
+  }
+  if (value instanceof Date) return dateToYmd(value);
+  if (typeof value?.toDate === "function") return dateToYmd(value.toDate());
+  if (typeof value?.seconds === "number") return dateToYmd(new Date(value.seconds * 1000));
+  return "";
+}
+
 type CompletionStats = {
   totalScheduled: number;
   totalCompleted: number;
@@ -70,11 +93,17 @@ type CompletionStats = {
   longestStreak: number;
 };
 
+function isOneDone(todo: OneTodo | null) {
+  if (!todo) return false;
+  if (typeof todo.completed === "boolean") return todo.completed;
+  return legacyDoneFromMap(todo.completedBy);
+}
+
 function computeOneStats(todo: OneTodo | null, todayYmd: string): CompletionStats {
   if (!todo) {
     return { totalScheduled: 0, totalCompleted: 0, currentStreak: 0, longestStreak: 0 };
   }
-  const done = !!todo.completed;
+  const done = isOneDone(todo);
   if (todo.dueDate > todayYmd && !done) {
     return { totalScheduled: 0, totalCompleted: 0, currentStreak: 0, longestStreak: 0 };
   }
@@ -125,6 +154,11 @@ export default function TodoCalendar() {
   const kind = (params.kind ?? "one") as "one" | "series";
   const id = params.id ?? "";
 
+  const { user } = useAuthUser();
+  const uid = user?.uid ?? "";
+  const { activeOwnerUid } = useView();
+  const ownerUid = activeOwnerUid || uid;
+
   const todayYmd = ymdToday();
 
   const [loading, setLoading] = useState(true);
@@ -136,6 +170,7 @@ export default function TodoCalendar() {
   const [monthAnchor, setMonthAnchor] = useState<Date>(() => firstOfMonth(ymdToDate(todayYmd)));
 
   // For series only: date -> completed
+  const [monthCompletions, setMonthCompletions] = useState<Record<string, boolean>>({});
   const [seriesCompletions, setSeriesCompletions] = useState<Record<string, boolean>>({});
 
   // Load the task
@@ -144,6 +179,7 @@ export default function TodoCalendar() {
 
     async function run() {
       setLoading(true);
+      setMonthCompletions({});
       setSeriesCompletions({});
       setOneTodo(null);
       setSeries(null);
@@ -187,7 +223,8 @@ export default function TodoCalendar() {
             id: snap.id,
             title: String(data.title ?? ""),
             dueDate: String(data.dueDate ?? "1970-01-01"),
-            completed: typeof data.completed === "boolean" ? data.completed : false,
+            completed: typeof data.completed === "boolean" ? data.completed : undefined,
+            completedBy: data.completedBy as Record<string, boolean> | undefined,
           };
 
           setOneTodo(t);
@@ -208,23 +245,76 @@ export default function TodoCalendar() {
     };
   }, [kind, id, todayYmd]);
 
-  // Load all completions for this series
+  // Load completions for the visible month (aligns with daily view doc reads)
   useEffect(() => {
-    if (kind !== "series" || !id) {
+    let alive = true;
+
+    async function run() {
+      if (kind !== "series" || !id || !series) {
+        setMonthCompletions({});
+        return;
+      }
+
+      const total = daysInMonth(monthAnchor);
+
+      const reads = Array.from({ length: total }, (_, i) => i + 1).map(async (dayNum) => {
+        const dt = new Date(monthAnchor.getFullYear(), monthAnchor.getMonth(), dayNum);
+        const ymd = dateToYmd(dt);
+
+        const completionId = `${id}_${ymd}`;
+        const snap = await getDoc(doc(db, "todoSeriesCompletions", completionId));
+
+        if (!snap.exists()) return [ymd, false] as const;
+
+        const data = snap.data() as any;
+        const done =
+          typeof data?.completed === "boolean"
+            ? !!data.completed
+            : legacyDoneFromMap(data?.completedBy);
+
+        return [ymd, done] as const;
+      });
+
+      const pairs = await Promise.all(reads);
+      if (!alive) return;
+
+      const map: Record<string, boolean> = {};
+      for (const [ymd, done] of pairs) map[ymd] = done;
+
+      setMonthCompletions(map);
+    }
+
+    void run();
+    return () => {
+      alive = false;
+    };
+  }, [kind, id, series, monthAnchor]);
+
+  // Load all completions for this series (for overall stats)
+  useEffect(() => {
+    if (kind !== "series" || !id || !ownerUid) {
       setSeriesCompletions({});
       return;
     }
 
-    const q = query(collection(db, "todoSeriesCompletions"), where("seriesId", "==", id));
+    const completionsRef = collection(db, "todoSeriesCompletions");
+    const q = query(completionsRef, where("ownerUid", "==", ownerUid));
+
     const unsub = onSnapshot(
       q,
       (snap) => {
         const map: Record<string, boolean> = {};
+        const prefix = `${id}_`;
         for (const docSnap of snap.docs) {
           const data = docSnap.data() as any;
-          const dateFromDoc = String(data?.date ?? "");
-          const dateFromId = completionDateFromId(id, docSnap.id);
-          const ymd = dateFromDoc || dateFromId;
+          const docId = docSnap.id;
+          const matches = data?.seriesId === id || docId.startsWith(prefix);
+          if (!matches) continue;
+
+          const dateFromIdRaw = completionDateFromId(id, docId);
+          const dateFromId = isYmdString(dateFromIdRaw) ? dateFromIdRaw : "";
+          const dateFromDoc = ymdFromValue(data?.date);
+          const ymd = dateFromId || dateFromDoc;
           if (!ymd) continue;
 
           const done =
@@ -239,7 +329,7 @@ export default function TodoCalendar() {
     );
 
     return () => unsub();
-  }, [kind, id]);
+  }, [kind, id, ownerUid]);
 
   const grid = useMemo(() => {
     const first = firstOfMonth(monthAnchor);
@@ -264,7 +354,8 @@ export default function TodoCalendar() {
     if (kind === "one") {
       if (!oneTodo) return { kind: "none" as const };
       if (ymd !== oneTodo.dueDate) return { kind: "none" as const };
-      if (oneTodo.completed) return { kind: "done" as const };
+      const done = isOneDone(oneTodo);
+      if (done) return { kind: "done" as const };
       if (ymd > todayYmd) return { kind: "future" as const };
       return { kind: "missed" as const };
     }
@@ -273,7 +364,7 @@ export default function TodoCalendar() {
     const occurs = occursOn(series, ymd);
     if (!occurs) return { kind: "none" as const };
 
-    const done = seriesCompletions[ymd] === true;
+    const done = monthCompletions[ymd] === true;
     if (done) return { kind: "done" as const };
     if (ymd > todayYmd) return { kind: "future" as const };
     return { kind: "missed" as const };
@@ -290,9 +381,10 @@ export default function TodoCalendar() {
 
       if (kind === "one") {
         if (!oneTodo || ymd !== oneTodo.dueDate) continue;
-        if (ymd > todayYmd) continue;
+        const done = isOneDone(oneTodo);
+        if (ymd > todayYmd && !done) continue;
         scheduled += 1;
-        if (oneTodo.completed) completed += 1;
+        if (done) completed += 1;
         continue;
       }
 
@@ -302,11 +394,11 @@ export default function TodoCalendar() {
       if (ymd > todayYmd) continue;
 
       scheduled += 1;
-      if (seriesCompletions[ymd] === true) completed += 1;
+      if (monthCompletions[ymd] === true) completed += 1;
     }
 
     return { scheduled, completed };
-  }, [kind, monthAnchor, oneTodo, series, seriesCompletions, todayYmd]);
+  }, [kind, monthAnchor, oneTodo, series, monthCompletions, todayYmd]);
 
   const overallStats = useMemo(() => {
     return kind === "one"
@@ -328,7 +420,7 @@ export default function TodoCalendar() {
             className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-bold text-zinc-100"
             onClick={() => nav(-1)}
           >
-            ← Back
+            {ICON_BACK} Back
           </button>
 
           <div className="text-center">
@@ -343,7 +435,7 @@ export default function TodoCalendar() {
             className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-bold text-zinc-100"
             onClick={() => setMonthAnchor((d) => addMonths(d, -1))}
           >
-            ←
+            {ICON_PREV_MONTH}
           </button>
 
           <div className="flex items-center gap-3 rounded-xl bg-zinc-900 px-3 py-2">
@@ -363,7 +455,7 @@ export default function TodoCalendar() {
             className="rounded-xl bg-zinc-900 px-3 py-2 text-sm font-bold text-zinc-100"
             onClick={() => setMonthAnchor((d) => addMonths(d, 1))}
           >
-            →
+            {ICON_NEXT_MONTH}
           </button>
         </div>
 
@@ -400,7 +492,7 @@ export default function TodoCalendar() {
                 </div>
                 <div className="text-xs font-semibold text-zinc-400">Scheduled-day streak</div>
               </div>
-              <div className="text-2xl">🔥</div>
+              <div className="text-2xl">{ICON_FLAME}</div>
             </div>
           </div>
         </div>
@@ -464,7 +556,7 @@ export default function TodoCalendar() {
             </div>
           </div>
 
-          {loading && <div className="mt-3 text-sm font-bold text-zinc-500">Loading…</div>}
+          {loading && <div className="mt-3 text-sm font-bold text-zinc-500">Loading...</div>}
         </div>
       </div>
     </div>
