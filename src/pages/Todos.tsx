@@ -10,6 +10,7 @@ import {
   getDocs,
   onSnapshot,
   query,
+  runTransaction,
   serverTimestamp,
   setDoc,
   updateDoc,
@@ -530,6 +531,26 @@ export default function Todos() {
     }
   }
 
+  async function maybeAutoSharePrompt(title: string, completedAt: Date) {
+    if (!uid || !canEdit) return;
+    try {
+      const nextCount = await runTransaction(db, async (tx) => {
+        const ref = doc(db, "users", uid);
+        const snap = await tx.get(ref);
+        const current = Number((snap.data() as any)?.sharePromptCount ?? 0);
+        const safeCurrent = Number.isFinite(current) && current > 0 ? current : 0;
+        const next = safeCurrent + 1;
+        tx.set(ref, { sharePromptCount: next }, { merge: true });
+        return next;
+      });
+      if (nextCount % 15 === 0) {
+        await openSharePrompt(title, completedAt);
+      }
+    } catch {
+      // Skip the auto-share prompt if we can't update the counter.
+    }
+  }
+
   async function shareImage() {
     if (!sharePayload?.file) return;
 
@@ -589,7 +610,7 @@ export default function Todos() {
       });
       if (!isDone) {
         celebrateSmall();
-        void openSharePrompt(todo.title, new Date());
+        void maybeAutoSharePrompt(todo.title, new Date());
       }
     } catch (e: any) {
       setErr(e?.message ?? "Failed to update to-do");
@@ -757,7 +778,7 @@ export default function Todos() {
           completedByRole: userRole ?? null,
           updatedAt: serverTimestamp(),
         });
-        if (!isDone) void openSharePrompt(series.title, new Date());
+        if (!isDone) void maybeAutoSharePrompt(series.title, new Date());
         return;
       }
 
@@ -767,7 +788,7 @@ export default function Todos() {
         completedByRole: !isDone ? (userRole ?? null) : null,
         updatedAt: serverTimestamp(),
       });
-      if (!isDone) void openSharePrompt(series.title, new Date());
+      if (!isDone) void maybeAutoSharePrompt(series.title, new Date());
     } catch (e: any) {
       setErr(e?.message ?? "Failed to update recurring to-do");
     }
